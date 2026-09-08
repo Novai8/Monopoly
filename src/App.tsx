@@ -36,7 +36,6 @@ import { audio } from './utils/audio';
 import { GameEngine } from './engine/gameEngine';
 import { MultiplayerClient } from './utils/multiplayerClient';
 
-import { ThreeBoard } from './components/ThreeBoard';
 import { Board } from './components/Board';
 import { PlayerBar } from './components/PlayerBar';
 import { GameLog } from './components/GameLog';
