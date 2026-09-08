@@ -159,6 +159,7 @@ export interface GameSettings {
   eventFrequency?: 'normal' | 'frequent' | 'extreme';
   quickChatEnabled?: boolean;
   emotesEnabled?: boolean;
+  fillWithBots?: boolean;
   masterVolume?: number;
   uiVolume?: number;
   gameplayVolume?: number;
@@ -282,3 +283,101 @@ export interface ChatMessage {
   timestamp: string;
   isSystem?: boolean;
 }
+
+export interface OpeningRollRecord {
+  playerId: string;
+  name: string;
+  character: CharacterId;
+  color: string;
+  roll: number;
+}
+
+export interface OpeningRollState {
+  active: boolean;
+  rolls: Record<string, number>;
+  tiedPlayerIds: string[];
+  winnerId: string | null;
+  history: OpeningRollRecord[];
+  isComplete: boolean;
+}
+
+export interface ServerGameState {
+  players: Player[];
+  activePlayerIndex: number;
+  ownership: OwnershipMap;
+  dice: [number, number];
+  isRolling: boolean;
+  gamePhase: GamePhase;
+  doublesCount: number;
+  rollSummary: string | null;
+  drawnCard: Card | null;
+  pendingRent: { amount: number; recipientId: string } | null;
+  pendingTax: number | null;
+  canBuyProperty: boolean;
+  winner: Player | null;
+  logs: GameLogEntry[];
+  roundNumber: number;
+  turnTimer: number;
+  auction: AuctionState | null;
+  activeTrades: (TradeOffer & { id: string; status: 'pending' | 'accepted' | 'declined' | 'cancelled' })[];
+  openingRoll: OpeningRollState | null;
+}
+
+export interface MultiplayerRoom {
+  code: string;
+  hostId: string;
+  playerLimit: number;
+  status: 'lobby' | 'opening-roll' | 'playing' | 'ended';
+  settings: GameSettings;
+  players: Player[];
+  gameState?: ServerGameState;
+  createdAt: number;
+}
+
+export type ClientAction =
+  | { type: 'CREATE_ROOM'; playerName: string; character: CharacterId }
+  | { type: 'JOIN_ROOM'; roomCode: string; playerName: string; character?: CharacterId }
+  | { type: 'LEAVE_ROOM' }
+  | { type: 'SET_READY'; ready: boolean }
+  | { type: 'CHANGE_CHARACTER'; character: CharacterId }
+  | { type: 'UPDATE_SETTINGS'; settings: Partial<GameSettings> }
+  | { type: 'KICK_PLAYER'; playerId: string }
+  | { type: 'ADD_BOT'; difficulty?: BotDifficulty; name?: string }
+  | { type: 'REMOVE_BOT'; botId: string }
+  | { type: 'START_GAME' }
+  | { type: 'OPENING_ROLL_ACTION' }
+  | { type: 'ROLL_DICE' }
+  | { type: 'BUY_PROPERTY'; tileId: number }
+  | { type: 'DECLINE_PROPERTY'; tileId: number }
+  | { type: 'UPGRADE_PROPERTY'; tileId: number }
+  | { type: 'MORTGAGE_PROPERTY'; tileId: number }
+  | { type: 'UNMORTGAGE_PROPERTY'; tileId: number }
+  | { type: 'PAY_DETENTION_FINE' }
+  | { type: 'USE_DETENTION_PASS' }
+  | { type: 'DRAW_CARD' }
+  | { type: 'START_AUCTION'; tileId: number }
+  | { type: 'PLACE_BID'; amount: number }
+  | { type: 'PASS_AUCTION' }
+  | { type: 'PROPOSE_TRADE'; offer: TradeOffer }
+  | { type: 'ACCEPT_TRADE'; tradeId: string }
+  | { type: 'DECLINE_TRADE'; tradeId: string }
+  | { type: 'CANCEL_TRADE'; tradeId: string }
+  | { type: 'END_TURN' }
+  | { type: 'SEND_CHAT'; text: string }
+  | { type: 'SEND_EMOTE'; emoji: string }
+  | { type: 'VOICE_SIGNAL'; targetPlayerId: string; signal: any }
+  | { type: 'RECONNECT'; roomCode: string; playerId: string; sessionToken: string };
+
+export type ServerMessage =
+  | { type: 'ROOM_CREATED'; roomCode: string; playerId: string; sessionToken: string; room: MultiplayerRoom }
+  | { type: 'ROOM_JOINED'; roomCode: string; playerId: string; sessionToken: string; room: MultiplayerRoom }
+  | { type: 'ROOM_UPDATED'; room: MultiplayerRoom }
+  | { type: 'GAME_STARTED'; room: MultiplayerRoom; gameState: ServerGameState }
+  | { type: 'STATE_UPDATE'; gameState: ServerGameState }
+  | { type: 'PLAYER_DISCONNECTED'; playerId: string; playerName: string }
+  | { type: 'PLAYER_RECONNECTED'; playerId: string; playerName: string }
+  | { type: 'CHAT_MESSAGE'; message: ChatMessage }
+  | { type: 'EMOTE_EVENT'; emote: QuickEmote }
+  | { type: 'VOICE_SIGNAL'; fromPlayerId: string; signal: any }
+  | { type: 'ERROR'; message: string; code?: string };
+

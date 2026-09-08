@@ -157,7 +157,7 @@ export const ActionBanner: React.FC<ActionBannerProps> = ({
             )}
           </div>
 
-          {!isBotTurn && (
+          {!isBotTurn ? (
             <button
               type="button"
               disabled={drawnCard.requiresPlayerChoice && !selectedTargetId}
@@ -171,6 +171,10 @@ export const ActionBanner: React.FC<ActionBannerProps> = ({
             >
               Continue
             </button>
+          ) : (
+            <span className="text-xs text-stone-400 italic animate-pulse py-1">
+              {activePlayer.name} is resolving card...
+            </span>
           )}
         </div>
       )}
@@ -179,7 +183,8 @@ export const ActionBanner: React.FC<ActionBannerProps> = ({
       {canBuyProperty && !drawnCard && (
         <div className="flex flex-col items-center gap-2.5">
           <span className="text-xs text-stone-300">
-            You landed on <span className="font-bold text-amber-300">{currentTile.name}</span>!
+            {isBotTurn ? `${activePlayer.name} landed on ` : 'You landed on '}
+            <span className="font-bold text-amber-300">{currentTile.name}</span>!
             Buy for <span className="font-bold text-emerald-400">${currentTile.cost}</span> or pass to auction?
           </span>
           {!isBotTurn ? (
@@ -214,8 +219,8 @@ export const ActionBanner: React.FC<ActionBannerProps> = ({
               </button>
             </div>
           ) : (
-            <span className="text-xs text-indigo-400 font-semibold animate-pulse">
-              Bot is deciding whether to buy...
+            <span className="text-xs text-stone-400 italic animate-pulse py-1">
+              {activePlayer.name} is deciding whether to buy...
             </span>
           )}
         </div>

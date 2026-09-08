@@ -5,18 +5,20 @@ import {
   BoardTheme,
   BoardTile,
   Card,
+  CharacterId,
   ChatMessage,
   GameLogEntry,
   GameMode,
   GamePhase,
   GameSettings,
+  MultiplayerRoom,
+  OpeningRollState,
   OwnershipMap,
   Player,
   TradeOffer,
 } from './types';
 import { generateBoard, BOARD_THEMES } from './data/boardData';
-import { drawCard } from './data/cardsData';
-import { CHARACTERS } from './data/charactersData';
+import { CHARACTERS, CHARACTER_LIST } from './data/charactersData';
 import {
   calculateRent,
   getNearestStation,
@@ -29,10 +31,10 @@ import {
   findAIPropertiesToBuild,
   findAIPropertyToMortgage,
   shouldAIBuyProperty,
-  calculateAIBid,
-  shouldAIBidInAuction,
 } from './utils/aiLogic';
 import { audio } from './utils/audio';
+import { GameEngine } from './engine/gameEngine';
+import { MultiplayerClient } from './utils/multiplayerClient';
 
 import { ThreeBoard } from './components/ThreeBoard';
 import { Board } from './components/Board';
@@ -43,39 +45,29 @@ import { PlayerInspectorModal } from './components/PlayerInspectorModal';
 import { ChatPanel } from './components/ChatPanel';
 import { PropertyModal } from './components/PropertyModal';
 import { TradeModal } from './components/TradeModal';
-import { SetupModal } from './components/SetupModal';
 import { RulesModal } from './components/RulesModal';
 import { SettingsModal } from './components/SettingsModal';
 import { AuctionModal } from './components/AuctionModal';
 import { VoiceChatBar } from './components/VoiceChatBar';
 import { Dice } from './components/Dice';
 import { ActionBanner } from './components/ActionBanner';
+import { MainMenu } from './components/MainMenu';
+import { SinglePlayerSetupModal } from './components/SinglePlayerSetupModal';
+import { MultiplayerLobbyModal } from './components/MultiplayerLobbyModal';
+import { OpeningRollModal } from './components/OpeningRollModal';
 
 import {
-  Volume2,
-  VolumeX,
   RotateCcw,
   BookOpen,
   ArrowLeftRight,
-  Trophy,
   Dices,
   Settings,
   Eye,
-  Gavel,
-  Shield,
-  Coins,
   Building2,
   Users,
   ScrollText,
   MessageSquare,
-  PanelRightClose,
-  PanelRightOpen,
-  Sparkles,
-  Timer,
-  ChevronRight,
-  Flag,
   Home,
-  ShieldAlert,
 } from 'lucide-react';
 
 const DEFAULT_SETTINGS: GameSettings = {
@@ -102,6 +94,26 @@ const DEFAULT_SETTINGS: GameSettings = {
 };
 
 export default function App() {
+  // Application Screen State: 'menu' | 'single-setup' | 'multiplayer-lobby' | 'playing'
+  const [appScreen, setAppScreen] = useState<'menu' | 'single-setup' | 'multiplayer-lobby' | 'playing'>('menu');
+  const [gameSessionType, setGameSessionType] = useState<'single' | 'multiplayer'>('single');
+
+  // Player Name Identity (saved in localStorage)
+  const [playerName, setPlayerName] = useState<string>(() => {
+    try {
+      return localStorage.getItem('town_tycoon_player_name') || 'Tycoon';
+    } catch (_) {
+      return 'Tycoon';
+    }
+  });
+
+  const handleUpdatePlayerName = (name: string) => {
+    setPlayerName(name);
+    try {
+      localStorage.setItem('town_tycoon_player_name', name);
+    } catch (_) {}
+  };
+
   // Game Configuration & Settings
   const [settings, setSettings] = useState<GameSettings>(DEFAULT_SETTINGS);
   const [boardTiles, setBoardTiles] = useState<BoardTile[]>(() =>
@@ -112,7 +124,6 @@ export default function App() {
   const [viewMode, setViewMode] = useState<'3d' | '2d'>('3d');
 
   // Modals & Panels
-  const [isSetupOpen, setIsSetupOpen] = useState(false);
   const [isRulesOpen, setIsRulesOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isTradeOpen, setIsTradeOpen] = useState(false);
@@ -122,13 +133,20 @@ export default function App() {
 
   // Layout & Navigation State
   const [sidebarTab, setSidebarTab] = useState<'players' | 'properties' | 'log' | 'chat'>('players');
-  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(false);
   const [highlightedTileId, setHighlightedTileId] = useState<number | null>(null);
   const [roundNumber, setRoundNumber] = useState<number>(1);
-  const [turnTimer, setTurnTimer] = useState<number>(45);
+  const [turnTimerSeconds, setTurnTimerSeconds] = useState<number>(45);
 
-  // Active Auction State
+  // Active Auction State (local or multiplayer)
   const [auctionTile, setAuctionTile] = useState<BoardTile | null>(null);
+
+  // Opening Roll State
+  const [openingRollState, setOpeningRollState] = useState<OpeningRollState | null>(null);
+
+  // Multiplayer Network State
+  const mpClient = useRef(MultiplayerClient.getInstance());
+  const [mpRoom, setMpRoom] = useState<MultiplayerRoom | null>(null);
+  const [mpError, setMpError] = useState<string | null>(null);
 
   // Town Chat Messages State
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
@@ -144,11 +162,11 @@ export default function App() {
     },
   ]);
 
-  // Players State (Default 4 players, expandable 2-10)
+  // Players State
   const [players, setPlayers] = useState<Player[]>([
     {
       id: 'p1',
-      name: 'Player 1',
+      name: playerName,
       isBot: false,
       isAI: false,
       color: '#ef4444',
@@ -158,10 +176,10 @@ export default function App() {
       inDetention: false,
       detentionTurns: 0,
       detentionPasses: 0,
-      freePasses: 0,
       bankrupt: false,
       voiceState: 'quiet',
       isHost: true,
+      ready: true,
     },
     {
       id: 'p2',
@@ -176,7 +194,6 @@ export default function App() {
       inDetention: false,
       detentionTurns: 0,
       detentionPasses: 0,
-      freePasses: 0,
       bankrupt: false,
       voiceState: 'quiet',
     },
@@ -193,13 +210,12 @@ export default function App() {
       inDetention: false,
       detentionTurns: 0,
       detentionPasses: 0,
-      freePasses: 0,
       bankrupt: false,
       voiceState: 'quiet',
     },
     {
       id: 'p4',
-      name: 'Rusty Bot',
+      name: 'Darius Bot',
       isBot: true,
       isAI: true,
       difficulty: 'normal',
@@ -210,18 +226,20 @@ export default function App() {
       inDetention: false,
       detentionTurns: 0,
       detentionPasses: 0,
-      freePasses: 0,
       bankrupt: false,
       voiceState: 'quiet',
     },
   ]);
 
   const [activePlayerIndex, setActivePlayerIndex] = useState<number>(0);
+  const activePlayer = players[activePlayerIndex] || players[0];
+
+  // Board Ownership Map
   const [ownership, setOwnership] = useState<OwnershipMap>(() =>
-    initializeOwnership(boardTiles)
+    initializeOwnership(generateBoard(DEFAULT_SETTINGS.boardSize, DEFAULT_SETTINGS.boardTheme))
   );
 
-  // Dice & Turn state
+  // Dice and Movement Phase
   const [dice, setDice] = useState<[number, number]>([1, 1]);
   const [isRolling, setIsRolling] = useState<boolean>(false);
   const [gamePhase, setGamePhase] = useState<GamePhase>('ready-to-roll');
@@ -233,428 +251,298 @@ export default function App() {
   const [pendingRent, setPendingRent] = useState<{ amount: number; recipient: Player } | null>(null);
   const [pendingTax, setPendingTax] = useState<number | null>(null);
   const [canBuyProperty, setCanBuyProperty] = useState<boolean>(false);
+
+  // Game Conclusion State
   const [winner, setWinner] = useState<Player | null>(null);
 
-  // Event Feed Log
-  const [logs, setLogs] = useState<GameLogEntry[]>([
+  // Event Logs
+  const [gameLogs, setGameLogs] = useState<GameLogEntry[]>([
     {
-      id: 'init',
-      text: 'Town Tycoon 3D ready! Roll the physical dice to start building your town.',
+      id: 'init-1',
+      text: 'Match started! Build your real estate empire.',
       type: 'info',
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     },
   ]);
 
-  const activePlayer = players[activePlayerIndex] || players[0];
-
-  // Scroll Position Guardian
-  // Ensures that game events (dice roll, character landing, rent/tax payments, bot actions, cards, new logs, etc.)
-  // NEVER automatically scroll the browser. The page stays precisely where the player left it.
-  // Full manual scrolling (mouse wheel, touch, scrollbars, keyboard) remains 100% natural and functional.
-  const userScrollYRef = useRef<number>(0);
-  const isUserScrollingRef = useRef<boolean>(false);
-  const scrollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => {
-    // Disable browser automatic scroll restoration so React updates don't jump
-    if ('scrollRestoration' in history) {
-      history.scrollRestoration = 'manual';
-    }
-
-    const markUserScroll = () => {
-      isUserScrollingRef.current = true;
-      if (scrollTimeoutRef.current) clearTimeout(scrollTimeoutRef.current);
-      scrollTimeoutRef.current = setTimeout(() => {
-        isUserScrollingRef.current = false;
-      }, 150);
-    };
-
-    const handleScroll = () => {
-      const currentY = window.scrollY;
-      const isMouseDown = (window.event as MouseEvent)?.buttons === 1;
-      if (isUserScrollingRef.current || isMouseDown) {
-        userScrollYRef.current = currentY;
-      } else {
-        // Automatic/programmatic displacement detected without user interaction
-        if (Math.abs(currentY - userScrollYRef.current) > 1) {
-          window.scrollTo({
-            top: userScrollYRef.current,
-            left: 0,
-            behavior: 'instant' as ScrollBehavior,
-          });
-        }
-      }
-    };
-
-    window.addEventListener('wheel', markUserScroll, { passive: true });
-    window.addEventListener('touchstart', markUserScroll, { passive: true });
-    window.addEventListener('touchmove', markUserScroll, { passive: true });
-    window.addEventListener('keydown', markUserScroll, { passive: true });
-    window.addEventListener('pointerdown', markUserScroll, { passive: true });
-    window.addEventListener('mousedown', markUserScroll, { passive: true });
-    window.addEventListener('scroll', handleScroll, { passive: true });
-
-    userScrollYRef.current = window.scrollY;
-
-    return () => {
-      window.removeEventListener('wheel', markUserScroll);
-      window.removeEventListener('touchstart', markUserScroll);
-      window.removeEventListener('touchmove', markUserScroll);
-      window.removeEventListener('keydown', markUserScroll);
-      window.removeEventListener('pointerdown', markUserScroll);
-      window.removeEventListener('mousedown', markUserScroll);
-      window.removeEventListener('scroll', handleScroll);
-      if (scrollTimeoutRef.current) clearTimeout(scrollTimeoutRef.current);
-    };
-  }, []);
-
   const addLog = useCallback((text: string, type: GameLogEntry['type'] = 'info') => {
-    setLogs((prev) => [
-      ...prev,
+    setGameLogs((prev) => [
       {
         id: Math.random().toString(36).substring(2, 9),
         text,
         type,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       },
+      ...prev,
     ]);
   }, []);
 
-  const handleSendChatMessage = useCallback((text: string) => {
-    const activeP = players[activePlayerIndex] || players[0];
-    const charObj = CHARACTERS[activeP?.character || 'duck'];
-    const newMsg: ChatMessage = {
-      id: `chat-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-      senderId: activeP?.id || 'p1',
-      senderName: activeP?.name || 'Player',
-      senderColor: activeP?.color || '#fbbf24',
-      senderEmoji: charObj?.emoji || '🎩',
-      text,
-      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+  // Sync player name changes to Player 1 if currently in local mode
+  useEffect(() => {
+    if (gameSessionType === 'single') {
+      setPlayers((prev) =>
+        prev.map((p, idx) => (idx === 0 && !p.isBot ? { ...p, name: playerName } : p))
+      );
+    }
+  }, [playerName, gameSessionType]);
+
+  // ========================================================
+  // MULTIPLAYER CLIENT INTEGRATION
+  // ========================================================
+  useEffect(() => {
+    const client = mpClient.current;
+    client.connect();
+
+    const cleanup = client.addListener({
+      onRoomCreated: (data) => {
+        setMpRoom(data.room);
+        setMpError(null);
+        audio.play('ui-click');
+      },
+      onRoomJoined: (data) => {
+        setMpRoom(data.room);
+        setMpError(null);
+        audio.play('ui-click');
+      },
+      onRoomUpdated: (room) => {
+        setMpRoom(room);
+        setMpError(null);
+      },
+      onGameStarted: (data) => {
+        setMpRoom(data.room);
+        setGameSessionType('multiplayer');
+        const tiles = generateBoard(data.room.settings.boardSize, data.room.settings.boardTheme);
+        setBoardTiles(tiles);
+        setSettings(data.room.settings);
+        setPlayers(data.gameState.players);
+        setActivePlayerIndex(data.gameState.activePlayerIndex);
+        setOwnership(data.gameState.ownership);
+        setDice(data.gameState.dice);
+        setGamePhase(data.gameState.gamePhase);
+        setOpeningRollState(data.gameState.openingRoll || null);
+        setAppScreen('playing');
+        audio.play('auction-win');
+      },
+      onStateUpdate: (gs) => {
+        setPlayers(gs.players);
+        setActivePlayerIndex(gs.activePlayerIndex);
+        setOwnership(gs.ownership);
+        setDice(gs.dice);
+        setIsRolling(gs.isRolling);
+        setGamePhase(gs.gamePhase);
+        setDoublesCount(gs.doublesCount);
+        setRollSummary(gs.rollSummary);
+        setDrawnCard(gs.drawnCard);
+        if (gs.pendingRent) {
+          const recipient = gs.players.find((p) => p.id === gs.pendingRent!.recipientId) || gs.players[0];
+          setPendingRent({ amount: gs.pendingRent.amount, recipient });
+        } else {
+          setPendingRent(null);
+        }
+        setPendingTax(gs.pendingTax);
+        setCanBuyProperty(gs.canBuyProperty);
+        setWinner(gs.winner);
+        setTurnTimerSeconds(gs.turnTimer);
+        setOpeningRollState(gs.openingRoll || null);
+        if (gs.logs && gs.logs.length > 0) {
+          setGameLogs((prev) => {
+            const existingIds = new Set(prev.map((l) => l.id));
+            const newLogs = gs.logs.filter((l) => !existingIds.has(l.id));
+            return [...newLogs, ...prev];
+          });
+        }
+      },
+      onChatMessage: (msg) => {
+        setChatMessages((prev) => [...prev, msg]);
+        audio.play('button-click');
+      },
+      onEmote: () => {
+        audio.play('button-click');
+      },
+      onPlayerDisconnected: (data) => {
+        addLog(`${data.playerName} temporarily disconnected.`, 'info');
+      },
+      onPlayerReconnected: (data) => {
+        addLog(`${data.playerName} reconnected to the match.`, 'info');
+      },
+      onError: (err) => {
+        setMpError(err);
+        audio.play('ui-error');
+      },
+    });
+
+    return () => {
+      cleanup();
     };
-    setChatMessages((prev) => [...prev, newMsg]);
-  }, [players, activePlayerIndex]);
+  }, [addLog]);
 
-  const handleSendChatEmote = useCallback((emoji: string) => {
-    const activeP = players[activePlayerIndex] || players[0];
-    const charObj = CHARACTERS[activeP?.character || 'duck'];
-    const newMsg: ChatMessage = {
-      id: `chat-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-      senderId: activeP?.id || 'p1',
-      senderName: activeP?.name || 'Player',
-      senderColor: activeP?.color || '#fbbf24',
-      senderEmoji: charObj?.emoji || '🎩',
-      text: emoji,
-      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+  // ========================================================
+  // SINGLE PLAYER MATCH LAUNCH & OPENING ROLL
+  // ========================================================
+  const handleStartSinglePlayerMatch = (config: {
+    playerName: string;
+    character: CharacterId;
+    aiCount: number;
+    difficulty: any;
+    boardSize: BoardSize;
+    theme: BoardTheme;
+    mode: GameMode;
+    startingMoney: number;
+    turnTimer: number;
+    rules: any;
+  }) => {
+    const tiles = generateBoard(config.boardSize, config.theme);
+    setBoardTiles(tiles);
+
+    const newSettings: GameSettings = {
+      ...DEFAULT_SETTINGS,
+      boardSize: config.boardSize,
+      boardTheme: config.theme,
+      theme: config.theme,
+      mode: config.mode,
+      gameMode: config.mode,
+      botDifficulty: config.difficulty,
+      startingMoney: config.startingMoney,
+      turnTimer: config.turnTimer,
+      auctionsEnabled: config.rules.auctions,
+      tradingEnabled: config.rules.trading,
     };
-    setChatMessages((prev) => [...prev, newMsg]);
-  }, [players, activePlayerIndex]);
+    setSettings(newSettings);
 
-  // Update board tiles when boardSize or boardTheme changes
-  const handleUpdateSettings = (newSettings: Partial<GameSettings>) => {
-    const merged: GameSettings = { ...settings, ...newSettings };
-    setSettings(merged);
-    audio.setEnabled(merged.sfxEnabled ?? true);
-    audio.setVolume(merged.sfxVolume ?? 80);
+    const botNames = [
+      'Barnaby Bot',
+      'Cleo Bot',
+      'Darius Bot',
+      'Eliza Bot',
+      'Finley Bot',
+      'Gideon Bot',
+      'Hattie Bot',
+      'Ignatius Bot',
+      'Jules Bot',
+    ];
+    const botCharacters = CHARACTER_LIST.filter((c) => c.id !== config.character);
+    const botColors = [
+      '#3b82f6',
+      '#10b981',
+      '#f59e0b',
+      '#8b5cf6',
+      '#ec4899',
+      '#06b6d4',
+      '#84cc16',
+      '#f97316',
+      '#6366f1',
+    ];
 
-    const size = merged.boardSize;
-    const theme = merged.boardTheme || merged.theme || 'classic-town';
+    const humanPlayer: Player = {
+      id: 'p1',
+      name: config.playerName,
+      isBot: false,
+      isAI: false,
+      color: '#ef4444',
+      character: config.character,
+      balance: config.startingMoney,
+      position: 0,
+      inDetention: false,
+      detentionTurns: 0,
+      detentionPasses: 0,
+      bankrupt: false,
+      voiceState: 'quiet',
+      isHost: true,
+      ready: true,
+    };
 
-    if (size !== settings.boardSize || theme !== settings.boardTheme) {
-      const newTiles = generateBoard(size, theme);
-      setBoardTiles(newTiles);
-      setOwnership(initializeOwnership(newTiles));
-      setPlayers((prev) => prev.map((p) => ({ ...p, position: 0 })));
-      addLog(`Board updated to ${theme} (${size} size)`, 'info');
+    const newPlayers: Player[] = [humanPlayer];
+    for (let i = 0; i < config.aiCount; i++) {
+      const charDef = botCharacters[i % botCharacters.length];
+      newPlayers.push({
+        id: `bot-${i + 1}`,
+        name: botNames[i % botNames.length],
+        isBot: true,
+        isAI: true,
+        difficulty: config.difficulty,
+        color: botColors[i % botColors.length],
+        character: charDef.id,
+        balance: config.startingMoney,
+        position: 0,
+        inDetention: false,
+        detentionTurns: 0,
+        detentionPasses: 0,
+        bankrupt: false,
+        voiceState: 'quiet',
+      });
+    }
+
+    setPlayers(newPlayers);
+    setOwnership(initializeOwnership(tiles));
+    setDice([1, 1]);
+    setWinner(null);
+    setAuctionTile(null);
+    setGameSessionType('single');
+
+    // Run authoritative opening roll step
+    const initialRoll = GameEngine.conductOpeningRollStep(newPlayers);
+    setOpeningRollState(initialRoll);
+
+    if (initialRoll.winnerId) {
+      const winnerIdx = newPlayers.findIndex((p) => p.id === initialRoll.winnerId);
+      setActivePlayerIndex(winnerIdx >= 0 ? winnerIdx : 0);
+    } else {
+      setActivePlayerIndex(0);
+    }
+
+    setGamePhase('opening-roll');
+    setAppScreen('playing');
+    addLog('Opening Roll underway to decide turn order!', 'roll');
+  };
+
+  const handleProceedFromOpeningRoll = () => {
+    if (!openingRollState || !openingRollState.winnerId) return;
+    const winnerIdx = players.findIndex((p) => p.id === openingRollState.winnerId);
+    setActivePlayerIndex(winnerIdx >= 0 ? winnerIdx : 0);
+    setGamePhase('ready-to-roll');
+    setOpeningRollState(null);
+    audio.play('ui-click');
+    addLog(
+      `${players[winnerIdx]?.name || 'Player'} won the opening roll and starts Turn 1!`,
+      'info'
+    );
+  };
+
+  const handleRerollOpeningRollTie = () => {
+    if (!openingRollState) return;
+    if (gameSessionType === 'multiplayer') {
+      mpClient.current.rollOpeningRoll();
+    } else {
+      const nextRoll = GameEngine.conductOpeningRollStep(
+        players,
+        openingRollState.rolls,
+        openingRollState.tiedPlayerIds
+      );
+      setOpeningRollState(nextRoll);
+      if (nextRoll.winnerId) {
+        const winnerIdx = players.findIndex((p) => p.id === nextRoll.winnerId);
+        setActivePlayerIndex(winnerIdx >= 0 ? winnerIdx : 0);
+      }
     }
   };
 
-  // Check victory condition
-  const checkVictory = useCallback(
-    (currentPlayers: Player[]) => {
-      const active = currentPlayers.filter((p) => !p.bankrupt);
-      if (active.length === 1 && currentPlayers.length > 1) {
-        setWinner(active[0]);
-        setGamePhase('game-over');
-        audio.play('victory-fanfare');
-        confetti({
-          particleCount: 160,
-          spread: 80,
-          origin: { y: 0.6 },
-        });
-        addLog(`🎉 VICTORY! ${active[0].name} has conquered Town Tycoon!`, 'info');
-      }
-    },
-    [addLog]
-  );
-
-  // Handle Bankruptcy
-  const declareBankruptcy = useCallback(
-    (bankruptPlayer: Player) => {
-      addLog(`🚨 ${bankruptPlayer.name} has gone BANKRUPT and is eliminated!`, 'bankruptcy');
-      audio.play('detention');
-
-      setOwnership((prev) => {
-        const next = { ...prev };
-        Object.keys(next).forEach((idStr) => {
-          const id = Number(idStr);
-          if (next[id]?.ownerId === bankruptPlayer.id) {
-            next[id] = { ownerId: null, houses: 0, isMortgaged: false };
-          }
-        });
-        return next;
-      });
-
-      setPlayers((prev) => {
-        const updated = prev.map((p) => (p.id === bankruptPlayer.id ? { ...p, bankrupt: true } : p));
-        checkVictory(updated);
-        return updated;
-      });
-
-      setPendingRent(null);
-      setPendingTax(null);
-      setCanBuyProperty(false);
-      setDrawnCard(null);
-      setGamePhase('turn-end');
-    },
-    [addLog, checkVictory]
-  );
-
-  // Card Action Executor
-  const executeCardAction = useCallback(
-    (card: Card, player: Player, rollSum: number) => {
-      setDrawnCard(card);
-      addLog(`${player.name} drew: "${card.title}" — ${card.description}`, 'card');
-
-      if (card.category === 'good') {
-        audio.play('card-good');
-      } else if (card.category === 'bad') {
-        audio.play('card-bad');
-      } else if (card.category === 'chaos') {
-        audio.play('dice-roll');
-      }
-
-      if (card.actionType === 'collect' && card.value) {
-        setPlayers((prev) =>
-          prev.map((p) => (p.id === player.id ? { ...p, balance: p.balance + card.value! } : p))
-        );
-      } else if (card.actionType === 'pay' && card.value) {
-        if (player.balance < card.value) {
-          declareBankruptcy(player);
-        } else {
-          setPlayers((prev) =>
-            prev.map((p) => (p.id === player.id ? { ...p, balance: p.balance - card.value! } : p))
-          );
-        }
-      } else if (card.actionType === 'free-pass') {
-        setPlayers((prev) =>
-          prev.map((p) =>
-            p.id === player.id
-              ? {
-                  ...p,
-                  freePasses: (p.freePasses ?? 0) + 1,
-                  detentionPasses: (p.detentionPasses ?? 0) + 1,
-                }
-              : p
-          )
-        );
-      } else if (card.actionType === 'go-detention' || (card.actionType as string) === 'detention') {
-        const detentionIdx = boardTiles.findIndex((t) => t.type === 'detention');
-        setPlayers((prev) =>
-          prev.map((p) =>
-            p.id === player.id
-              ? { ...p, position: detentionIdx >= 0 ? detentionIdx : 0, inDetention: true, detentionTurns: 0 }
-              : p
-          )
-        );
-        audio.play('detention');
-      } else if (card.actionType === 'move-to' && card.targetTileId !== undefined) {
-        const currentPos = player.position;
-        const targetPos = card.targetTileId % boardTiles.length;
-        const passedStart = targetPos < currentPos;
-        setPlayers((prev) =>
-          prev.map((p) =>
-            p.id === player.id
-              ? { ...p, position: targetPos, balance: passedStart ? p.balance + 200 : p.balance }
-              : p
-          )
-        );
-        if (passedStart) {
-          addLog(`${player.name} passed START and collected $200!`, 'rent');
-          audio.play('salary-collect');
-        }
-      } else if (card.actionType === 'move-spaces' && card.value) {
-        const newPos = (player.position + card.value + boardTiles.length) % boardTiles.length;
-        setPlayers((prev) =>
-          prev.map((p) => (p.id === player.id ? { ...p, position: newPos } : p))
-        );
-      } else if (card.actionType === 'nearest-station') {
-        const targetPos = getNearestStation(player.position, boardTiles);
-        const passedStart = targetPos < player.position;
-        setPlayers((prev) =>
-          prev.map((p) =>
-            p.id === player.id
-              ? { ...p, position: targetPos, balance: passedStart ? p.balance + 200 : p.balance }
-              : p
-          )
-        );
-        if (passedStart) {
-          audio.play('salary-collect');
-        }
-      } else if (card.actionType === 'nearest-utility') {
-        const targetPos = getNearestUtility(player.position, boardTiles);
-        const passedStart = targetPos < player.position;
-        setPlayers((prev) =>
-          prev.map((p) =>
-            p.id === player.id
-              ? { ...p, position: targetPos, balance: passedStart ? p.balance + 200 : p.balance }
-              : p
-          )
-        );
-        if (passedStart) {
-          audio.play('salary-collect');
-        }
-      } else if (card.actionType === 'collect-from-players' && card.value) {
-        let totalCollected = 0;
-        setPlayers((prev) =>
-          prev.map((p) => {
-            if (p.id === player.id || p.bankrupt) return p;
-            const deduction = Math.min(p.balance, card.value!);
-            totalCollected += deduction;
-            return { ...p, balance: p.balance - deduction };
-          })
-        );
-        setPlayers((prev) =>
-          prev.map((p) => (p.id === player.id ? { ...p, balance: p.balance + totalCollected } : p))
-        );
-      } else if (card.actionType === 'pay-players' && card.value) {
-        const activeOthers = players.filter((p) => p.id !== player.id && !p.bankrupt);
-        const totalNeeded = card.value * activeOthers.length;
-        if (player.balance < totalNeeded) {
-          declareBankruptcy(player);
-        } else {
-          setPlayers((prev) =>
-            prev.map((p) => {
-              if (p.id === player.id) return { ...p, balance: p.balance - totalNeeded };
-              if (p.bankrupt) return p;
-              return { ...p, balance: p.balance + card.value! };
-            })
-          );
-        }
-      }
-    },
-    [addLog, boardTiles, declareBankruptcy, players]
-  );
-
-  // Dismiss Card Handler (with optional player target selection for chaos cards)
-  const handleDismissCard = (targetPlayerId?: string) => {
-    if (
-      drawnCard &&
-      (drawnCard.actionType === 'swap-positions' ||
-        drawnCard.actionType === 'player-choice-swap' ||
-        (drawnCard.actionType as string) === 'swap-position') &&
-      targetPlayerId
-    ) {
-      const target = players.find((p) => p.id === targetPlayerId);
-      if (target) {
-        const activePos = activePlayer.position;
-        const targetPos = target.position;
-        setPlayers((prev) =>
-          prev.map((p) => {
-            if (p.id === activePlayer.id) return { ...p, position: targetPos };
-            if (p.id === target.id) return { ...p, position: activePos };
-            return p;
-          })
-        );
-        addLog(`🌀 ${activePlayer.name} swapped spaces with ${target.name}!`, 'chaos');
-      }
-    }
-    setDrawnCard(null);
-    setGamePhase('turn-end');
-  };
-
-  // Process Tile Landing Actions
-  const handleTileLanding = useCallback(
-    (player: Player, tileId: number, diceSum: number, isDoubleRent: boolean = false) => {
-      const tile = boardTiles[tileId];
-      if (!tile) return;
-
-      audio.play('pawn-step');
-
-      // 1. Property / Station / Utility
-      if (tile.type === 'property' || tile.type === 'station' || tile.type === 'utility') {
-        const prop = ownership[tileId];
-        if (!prop || !prop.ownerId) {
-          // Unowned -> Option to Buy or Pass (Auction)
-          setCanBuyProperty(true);
-          setGamePhase('action-required');
-        } else if (prop.ownerId !== player.id && !prop.isMortgaged) {
-          // Owned by opponent -> Pay Rent
-          const recipient = players.find((p) => p.id === prop.ownerId);
-          if (recipient && !recipient.bankrupt) {
-            const rent = calculateRent(tile, boardTiles, ownership, diceSum, isDoubleRent);
-            if (rent > 0) {
-              setPendingRent({ amount: rent, recipient });
-              setGamePhase('action-required');
-              addLog(
-                `${player.name} landed on ${tile.name} — rent of $${rent} due to ${recipient.name}.`,
-                'rent'
-              );
-            } else {
-              setGamePhase('turn-end');
-            }
-          } else {
-            setGamePhase('turn-end');
-          }
-        } else {
-          setGamePhase('turn-end');
-        }
-      } else if (tile.type === 'tax' || (tile.type as string) === 'municipal-fee') {
-        const taxVal = tile.taxAmount || 100;
-        setPendingTax(taxVal);
-        setGamePhase('action-required');
-        addLog(`${player.name} landed on ${tile.name} — tax fee of $${taxVal} due.`, 'rent');
-      } else if (tile.type === 'go-to-detention') {
-        const detentionIdx = boardTiles.findIndex((t) => t.type === 'detention');
-        setPlayers((prev) =>
-          prev.map((p) =>
-            p.id === player.id
-              ? {
-                  ...p,
-                  position: detentionIdx >= 0 ? detentionIdx : 0,
-                  inDetention: true,
-                  detentionTurns: 0,
-                }
-              : p
-          )
-        );
-        audio.play('detention');
-        addLog(`${player.name} committed a violation and was sent to Detention!`, 'detention');
-        setGamePhase('turn-end');
-      } else if (tile.type === 'event' || (tile.type as string) === 'lucky-event') {
-        const card = drawCard('event', settings.gameMode);
-        executeCardAction(card, player, diceSum);
-      } else if (tile.type === 'community' || (tile.type as string) === 'town-council') {
-        const card = drawCard('community', settings.gameMode);
-        executeCardAction(card, player, diceSum);
-      } else {
-        // Safe tiles (START, Park, Visiting Detention)
-        setGamePhase('turn-end');
-      }
-    },
-    [addLog, boardTiles, executeCardAction, ownership, players, settings.gameMode]
-  );
-
-  // Roll Dice Engine
+  // ========================================================
+  // CORE GAME ACTIONS: DICE ROLL, MOVEMENT, BUY, AUCTION
+  // ========================================================
   const handleRollDice = useCallback(() => {
     if (isRolling || gamePhase !== 'ready-to-roll' || winner) return;
 
+    if (gameSessionType === 'multiplayer') {
+      mpClient.current.rollDice();
+      return;
+    }
+
+    // Local Single Player Simulation
     setIsRolling(true);
     audio.play('dice-roll');
 
     setTimeout(() => {
-      const d1 = Math.floor(Math.random() * 6) + 1;
-      const d2 = Math.floor(Math.random() * 6) + 1;
+      const [d1, d2] = GameEngine.rollDice();
       const total = d1 + d2;
       const isDoubles = d1 === d2;
 
@@ -664,27 +552,23 @@ export default function App() {
 
       addLog(`${activePlayer.name} rolled [${d1}, ${d2}] = ${total}${isDoubles ? ' (DOUBLES!)' : ''}`, 'roll');
 
-      // Check Detention Logic
+      // Check Detention
       if (activePlayer.inDetention) {
         if (isDoubles) {
           setPlayers((prev) =>
             prev.map((p) =>
-              p.id === activePlayer.id
-                ? { ...p, inDetention: false, detentionTurns: 0 }
-                : p
+              p.id === activePlayer.id ? { ...p, inDetention: false, detentionTurns: 0 } : p
             )
           );
           addLog(`${activePlayer.name} rolled doubles and broke out of Detention!`, 'detention');
-          // Move forward the rolled amount
-          const newPos = (activePlayer.position + total) % boardTiles.length;
+          const moveRes = GameEngine.calculateMovementPath(activePlayer.position, total, boardTiles.length);
           setPlayers((prev) =>
-            prev.map((p) => (p.id === activePlayer.id ? { ...p, position: newPos } : p))
+            prev.map((p) => (p.id === activePlayer.id ? { ...p, position: moveRes.targetPos } : p))
           );
-          handleTileLanding(activePlayer, newPos, total);
+          handleTileLanding(activePlayer, moveRes.targetPos, total);
         } else {
           const turns = activePlayer.detentionTurns + 1;
           if (turns >= 3) {
-            // Must pay $50 bail on 3rd turn
             if (activePlayer.balance < 50) {
               declareBankruptcy(activePlayer);
               return;
@@ -696,26 +580,24 @@ export default function App() {
                   : p
               )
             );
-            addLog(`${activePlayer.name} served 3 turns, paid $50 bail, and was released.`, 'detention');
-            const newPos = (activePlayer.position + total) % boardTiles.length;
+            addLog(`${activePlayer.name} served 3 turns, paid $50 fine, and was discharged.`, 'detention');
+            const moveRes = GameEngine.calculateMovementPath(activePlayer.position, total, boardTiles.length);
             setPlayers((prev) =>
-              prev.map((p) => (p.id === activePlayer.id ? { ...p, position: newPos } : p))
+              prev.map((p) => (p.id === activePlayer.id ? { ...p, position: moveRes.targetPos } : p))
             );
-            handleTileLanding(activePlayer, newPos, total);
+            handleTileLanding(activePlayer, moveRes.targetPos, total);
           } else {
             setPlayers((prev) =>
-              prev.map((p) =>
-                p.id === activePlayer.id ? { ...p, detentionTurns: turns } : p
-              )
+              prev.map((p) => (p.id === activePlayer.id ? { ...p, detentionTurns: turns } : p))
             );
-            addLog(`${activePlayer.name} failed to roll doubles and remains in Detention.`, 'detention');
+            addLog(`${activePlayer.name} rolled no doubles. Remains in Detention.`, 'detention');
             setGamePhase('turn-end');
           }
         }
         return;
       }
 
-      // Check 3 consecutive doubles -> Detention
+      // Check 3 consecutive doubles
       if (isDoubles) {
         const nextDoubles = doublesCount + 1;
         setDoublesCount(nextDoubles);
@@ -734,7 +616,7 @@ export default function App() {
             )
           );
           audio.play('detention');
-          addLog(`${activePlayer.name} rolled 3 DOUBLES in a row! Sent directly to Detention!`, 'detention');
+          addLog(`${activePlayer.name} rolled 3 DOUBLES consecutively! Sent to Detention!`, 'detention');
           setDoublesCount(0);
           setGamePhase('turn-end');
           return;
@@ -743,79 +625,130 @@ export default function App() {
         setDoublesCount(0);
       }
 
-      // Advance Player on Board
-      const oldPos = activePlayer.position;
-      const newPos = (oldPos + total) % boardTiles.length;
-      const passedStart = newPos < oldPos;
+      // Movement Path
+      const moveRes = GameEngine.calculateMovementPath(activePlayer.position, total, boardTiles.length);
+      setPlayers((prev) =>
+        prev.map((p) => (p.id === activePlayer.id ? { ...p, position: moveRes.targetPos } : p))
+      );
 
+      if (moveRes.passedGo) {
+        const salary = GameEngine.getGoSalary(settings.mode);
+        setPlayers((prev) =>
+          prev.map((p) => (p.id === activePlayer.id ? { ...p, balance: p.balance + salary } : p))
+        );
+        audio.play('salary-collect');
+        addLog(`${activePlayer.name} passed Town Square (GO) and collected $${salary} salary!`, 'buy');
+      }
+
+      handleTileLanding(activePlayer, moveRes.targetPos, total);
+    }, 850);
+  }, [activePlayer, boardTiles, doublesCount, gamePhase, gameSessionType, isRolling, settings.mode, winner, addLog]);
+
+  // Tile Landing Resolution (Single Player)
+  const handleTileLanding = (player: Player, tilePos: number, diceSum: number) => {
+    const tile = boardTiles[tilePos];
+    if (!tile) return;
+
+    const landing = GameEngine.resolveLanding(
+      player,
+      tile,
+      boardTiles,
+      ownership,
+      players,
+      settings,
+      diceSum
+    );
+
+    setRollSummary(landing.description);
+
+    if (landing.type === 'unowned') {
+      setCanBuyProperty(true);
+      setGamePhase('action-required');
+    } else if (landing.type === 'rent' && landing.recipientId && landing.amount) {
+      const recipient = players.find((p) => p.id === landing.recipientId);
+      if (recipient) {
+        setPendingRent({ amount: landing.amount, recipient });
+        setGamePhase('action-required');
+      } else {
+        setGamePhase('turn-end');
+      }
+    } else if (landing.type === 'tax' && landing.amount) {
+      setPendingTax(landing.amount);
+      setGamePhase('action-required');
+    } else if (landing.type === 'card' && landing.card) {
+      setDrawnCard(landing.card);
+      setGamePhase('card-choice');
+    } else if (landing.type === 'detention') {
+      const detentionIdx = boardTiles.findIndex((t) => t.type === 'detention');
       setPlayers((prev) =>
         prev.map((p) =>
-          p.id === activePlayer.id
-            ? { ...p, position: newPos, balance: passedStart ? p.balance + 200 : p.balance }
+          p.id === player.id
+            ? {
+                ...p,
+                position: detentionIdx >= 0 ? detentionIdx : 0,
+                inDetention: true,
+                detentionTurns: 0,
+              }
             : p
         )
       );
-
-      if (passedStart) {
-        addLog(`${activePlayer.name} completed a full lap! Collected $200 salary.`, 'rent');
-        audio.play('salary-collect');
-      }
-
-      setRollSummary(`Rolled ${total}${isDoubles ? ' (Doubles!)' : ''}`);
-      handleTileLanding(activePlayer, newPos, total);
-    }, 900);
-  }, [
-    activePlayer,
-    boardTiles,
-    declareBankruptcy,
-    doublesCount,
-    gamePhase,
-    handleTileLanding,
-    isRolling,
-    winner,
-  ]);
+      audio.play('detention');
+      setGamePhase('turn-end');
+    } else {
+      // Free Parking or Safe
+      setGamePhase('turn-end');
+    }
+  };
 
   // Buy Property Handler
   const handleBuyProperty = useCallback(() => {
+    if (gameSessionType === 'multiplayer') {
+      const currentTile = boardTiles[activePlayer.position];
+      if (currentTile) mpClient.current.buyProperty(currentTile.id);
+      return;
+    }
+
     const tile = boardTiles[activePlayer.position];
     if (!tile || !tile.cost || activePlayer.balance < tile.cost) return;
 
-    setPlayers((prev) =>
-      prev.map((p) => (p.id === activePlayer.id ? { ...p, balance: p.balance - tile.cost! } : p))
-    );
+    const buyRes = GameEngine.buyProperty(activePlayer, tile, ownership);
+    if (buyRes.success) {
+      setPlayers((prev) => prev.map((p) => (p.id === activePlayer.id ? buyRes.updatedPlayer : p)));
+      setOwnership(buyRes.updatedOwnership);
+      setCanBuyProperty(false);
+      audio.play('property-buy');
+      addLog(`${activePlayer.name} acquired ${tile.name} for $${tile.cost}!`, 'buy');
+      setGamePhase('turn-end');
+    }
+  }, [activePlayer, boardTiles, gameSessionType, ownership, addLog]);
 
-    setOwnership((prev) => ({
-      ...prev,
-      [tile.id]: { ownerId: activePlayer.id, houses: 0, isMortgaged: false },
-    }));
-
-    audio.play('property-buy');
-    addLog(`${activePlayer.name} purchased ${tile.name} for $${tile.cost}.`, 'buy');
-    setCanBuyProperty(false);
-    setGamePhase('turn-end');
-  }, [activePlayer, boardTiles, addLog]);
-
-  // Pass Property -> Initiates Live Public Auction!
+  // Decline Property Handler
   const handlePassProperty = useCallback(() => {
-    const tile = boardTiles[activePlayer.position];
-    addLog(
-      `${activePlayer.name} passed on purchasing ${tile.name}. Starting public auction!`,
-      'auction'
-    );
-    audio.play('auction-start');
-    setCanBuyProperty(false);
-    setAuctionTile(tile);
-  }, [activePlayer, boardTiles, addLog]);
+    if (gameSessionType === 'multiplayer') {
+      const currentTile = boardTiles[activePlayer.position];
+      if (currentTile) mpClient.current.declineProperty(currentTile.id);
+      return;
+    }
 
-  // Auction Finished Handler
+    const tile = boardTiles[activePlayer.position];
+    if (settings.auctionsEnabled && tile) {
+      addLog(`${activePlayer.name} passed on ${tile.name}. Town Hall Auction begun!`, 'auction');
+      audio.play('auction-start');
+      setCanBuyProperty(false);
+      setAuctionTile(tile);
+    } else {
+      setCanBuyProperty(false);
+      setGamePhase('turn-end');
+    }
+  }, [activePlayer, boardTiles, gameSessionType, settings.auctionsEnabled, addLog]);
+
+  // Auction Resolution
   const handleAuctionEnd = (winnerId: string | null, winningBid: number) => {
     if (auctionTile && winnerId && winningBid > 0) {
       const winnerPlayer = players.find((p) => p.id === winnerId);
       if (winnerPlayer) {
         setPlayers((prev) =>
-          prev.map((p) =>
-            p.id === winnerId ? { ...p, balance: p.balance - winningBid } : p
-          )
+          prev.map((p) => (p.id === winnerId ? { ...p, balance: p.balance - winningBid } : p))
         );
         setOwnership((prev) => ({
           ...prev,
@@ -823,12 +756,12 @@ export default function App() {
         }));
         audio.play('auction-win');
         addLog(
-          `🔨 AUCTION WON: ${winnerPlayer.name} purchased ${auctionTile.name} for $${winningBid}!`,
+          `🔨 AUCTION WON: ${winnerPlayer.name} acquired ${auctionTile.name} for $${winningBid}!`,
           'auction'
         );
       }
     } else if (auctionTile) {
-      addLog(`Auction for ${auctionTile.name} ended with no bids.`, 'auction');
+      addLog(`Auction for ${auctionTile.name} closed with no bids.`, 'auction');
     }
     setAuctionTile(null);
     setGamePhase('turn-end');
@@ -840,7 +773,7 @@ export default function App() {
     const { amount, recipient } = pendingRent;
 
     if (activePlayer.balance < amount) {
-      declareBankruptcy(activePlayer);
+      declareBankruptcy(activePlayer, recipient.id);
     } else {
       setPlayers((prev) =>
         prev.map((p) => {
@@ -854,7 +787,7 @@ export default function App() {
       setPendingRent(null);
       setGamePhase('turn-end');
     }
-  }, [activePlayer, addLog, declareBankruptcy, pendingRent]);
+  }, [activePlayer, pendingRent, addLog]);
 
   // Pay Tax Handler
   const handlePayTax = useCallback(() => {
@@ -871,7 +804,32 @@ export default function App() {
       setPendingTax(null);
       setGamePhase('turn-end');
     }
-  }, [activePlayer, addLog, declareBankruptcy, pendingTax]);
+  }, [activePlayer, pendingTax, addLog]);
+
+  // Dismiss / Execute Card
+  const handleDismissCard = useCallback(() => {
+    if (!drawnCard) return;
+    if (gameSessionType === 'multiplayer') {
+      mpClient.current.drawCard();
+      setDrawnCard(null);
+      return;
+    }
+
+    const cardRes = GameEngine.executeCard(
+      drawnCard,
+      activePlayer,
+      players,
+      boardTiles,
+      ownership,
+      boardTiles.length
+    );
+
+    setPlayers(cardRes.updatedAllPlayers);
+    setOwnership(cardRes.updatedOwnership);
+    addLog(cardRes.message, 'card');
+    setDrawnCard(null);
+    setGamePhase('turn-end');
+  }, [activePlayer, boardTiles, drawnCard, gameSessionType, ownership, players, addLog]);
 
   // Pay Detention Bail
   const handlePayDetentionBail = useCallback(() => {
@@ -884,10 +842,10 @@ export default function App() {
       )
     );
     audio.play('button-click');
-    addLog(`${activePlayer.name} paid $50 bail and was released from Detention.`, 'detention');
+    addLog(`${activePlayer.name} paid $50 bail and was discharged from Detention.`, 'detention');
   }, [activePlayer, addLog]);
 
-  // Use Free Pass Card
+  // Use Detention Free Pass
   const handleUseFreePass = useCallback(() => {
     const currentPasses = activePlayer.detentionPasses ?? activePlayer.freePasses ?? 0;
     if (currentPasses <= 0) return;
@@ -896,8 +854,8 @@ export default function App() {
         p.id === activePlayer.id
           ? {
               ...p,
-              freePasses: Math.max(0, currentPasses - 1),
               detentionPasses: Math.max(0, currentPasses - 1),
+              freePasses: Math.max(0, currentPasses - 1),
               inDetention: false,
               detentionTurns: 0,
             }
@@ -905,16 +863,38 @@ export default function App() {
       )
     );
     audio.play('button-click');
-    addLog(`${activePlayer.name} used a Free Pass card to leave Detention!`, 'detention');
+    addLog(`${activePlayer.name} redeemed a Free Pass card to depart Detention!`, 'detention');
   }, [activePlayer, addLog]);
+
+  // Declare Bankruptcy
+  const declareBankruptcy = (bankruptPlayer: Player, creditorId?: string | null) => {
+    const bRes = GameEngine.handleBankruptcy(bankruptPlayer, creditorId || null, players, ownership);
+    setPlayers(bRes.updatedPlayers);
+    setOwnership(bRes.updatedOwnership);
+    setWinner(bRes.winner);
+    audio.play('card-bad');
+    addLog(bRes.message, 'bankruptcy');
+
+    if (bRes.winner) {
+      setGamePhase('game-over');
+      confetti({ particleCount: 150, spread: 80, origin: { y: 0.6 } });
+    } else {
+      handleEndTurn();
+    }
+  };
 
   // End Turn Handler
   const handleEndTurn = useCallback(() => {
     if (winner) return;
 
+    if (gameSessionType === 'multiplayer') {
+      mpClient.current.endTurn();
+      return;
+    }
+
     const rolledDoubles = dice[0] === dice[1] && doublesCount > 0 && !activePlayer.inDetention;
     if (rolledDoubles) {
-      addLog(`${activePlayer.name} rolled DOUBLES and gets another turn!`, 'roll');
+      addLog(`${activePlayer.name} rolled DOUBLES and gets another roll!`, 'roll');
       setGamePhase('ready-to-roll');
       setRollSummary(null);
       return;
@@ -928,147 +908,136 @@ export default function App() {
     setCanBuyProperty(false);
 
     let nextIdx = (activePlayerIndex + 1) % players.length;
-    let attempts = 0;
-    while (players[nextIdx]?.bankrupt && attempts < players.length) {
+    let loops = 0;
+    while (players[nextIdx]?.bankrupt && loops < players.length) {
       nextIdx = (nextIdx + 1) % players.length;
-      attempts++;
+      loops++;
+    }
+
+    if (nextIdx <= activePlayerIndex) {
+      setRoundNumber((r) => r + 1);
     }
 
     setActivePlayerIndex(nextIdx);
     setGamePhase('ready-to-roll');
     addLog(`--- Turn passed to ${players[nextIdx].name} ---`, 'info');
-  }, [activePlayer, activePlayerIndex, dice, doublesCount, players, addLog, winner]);
+  }, [activePlayer, activePlayerIndex, dice, doublesCount, gameSessionType, players, winner, addLog]);
 
-  // Property Building / Mortgaging Handlers
+  // House / Hotel Construction
   const handleBuyHouse = (tileId: number) => {
-    const tile = boardTiles[tileId];
-    if (!tile || !tile.houseCost || activePlayer.balance < tile.houseCost) return;
-    const prop = ownership[tileId];
-    if (!prop || prop.houses >= 5 || prop.isMortgaged) return;
+    if (gameSessionType === 'multiplayer') {
+      mpClient.current.upgradeProperty(tileId);
+      return;
+    }
 
-    setPlayers((prev) =>
-      prev.map((p) => (p.id === activePlayer.id ? { ...p, balance: p.balance - tile.houseCost! } : p))
-    );
-    setOwnership((prev) => ({
-      ...prev,
-      [tileId]: { ...prop, houses: prop.houses + 1 },
-    }));
-    audio.play('property-buy');
-    addLog(
-      `${activePlayer.name} built a ${prop.houses + 1 === 5 ? 'Hotel' : 'House'} on ${tile.name} for $${tile.houseCost}.`,
-      'buy'
-    );
+    const tile = boardTiles[tileId];
+    if (!tile) return;
+    const upRes = GameEngine.upgradeProperty(activePlayer, tile, boardTiles, ownership);
+    if (upRes.success) {
+      setPlayers((prev) => prev.map((p) => (p.id === activePlayer.id ? upRes.updatedPlayer : p)));
+      setOwnership(upRes.updatedOwnership);
+      audio.play('property-buy');
+      const newHouses = upRes.updatedOwnership[tileId]?.houses || 0;
+      addLog(
+        `${activePlayer.name} upgraded ${tile.name} to ${newHouses === 5 ? 'a Luxury Hotel' : `Level ${newHouses}`}!`,
+        'buy'
+      );
+    }
   };
 
-  const handleSellHouse = (tileId: number) => {
-    const tile = boardTiles[tileId];
-    if (!tile || !tile.houseCost) return;
-    const prop = ownership[tileId];
-    if (!prop || prop.houses <= 0) return;
-
-    const refund = tile.houseCost / 2;
-    setPlayers((prev) =>
-      prev.map((p) => (p.id === activePlayer.id ? { ...p, balance: p.balance + refund } : p))
-    );
-    setOwnership((prev) => ({
-      ...prev,
-      [tileId]: { ...prop, houses: prop.houses - 1 },
-    }));
-    audio.play('property-buy');
-    addLog(`${activePlayer.name} sold a building on ${tile.name} for $${refund}.`, 'buy');
-  };
-
+  // Mortgage & Unmortgage
   const handleMortgage = (tileId: number) => {
-    const tile = boardTiles[tileId];
-    if (!tile || !tile.mortgageValue) return;
-    const prop = ownership[tileId];
-    if (!prop || prop.isMortgaged || prop.houses > 0) return;
+    if (gameSessionType === 'multiplayer') {
+      mpClient.current.mortgageProperty(tileId);
+      return;
+    }
 
-    setPlayers((prev) =>
-      prev.map((p) => (p.id === activePlayer.id ? { ...p, balance: p.balance + tile.mortgageValue! } : p))
-    );
-    setOwnership((prev) => ({
-      ...prev,
-      [tileId]: { ...prop, isMortgaged: true },
-    }));
-    audio.play('button-click');
-    addLog(`${activePlayer.name} mortgaged ${tile.name} for $${tile.mortgageValue}.`, 'rent');
+    const tile = boardTiles[tileId];
+    if (!tile) return;
+    const mRes = GameEngine.mortgageProperty(activePlayer, tile, boardTiles, ownership);
+    if (mRes.success) {
+      setPlayers((prev) => prev.map((p) => (p.id === activePlayer.id ? mRes.updatedPlayer : p)));
+      setOwnership(mRes.updatedOwnership);
+      audio.play('button-click');
+      addLog(`${activePlayer.name} mortgaged ${tile.name} for $${tile.mortgageValue || 50}.`, 'rent');
+    }
   };
 
   const handleUnmortgage = (tileId: number) => {
+    if (gameSessionType === 'multiplayer') {
+      mpClient.current.unmortgageProperty(tileId);
+      return;
+    }
+
     const tile = boardTiles[tileId];
-    if (!tile || !tile.mortgageValue) return;
-    const prop = ownership[tileId];
-    if (!prop || !prop.isMortgaged) return;
-
-    const cost = Math.round(tile.mortgageValue * 1.1);
-    if (activePlayer.balance < cost) return;
-
-    setPlayers((prev) =>
-      prev.map((p) => (p.id === activePlayer.id ? { ...p, balance: p.balance - cost } : p))
-    );
-    setOwnership((prev) => ({
-      ...prev,
-      [tileId]: { ...prop, isMortgaged: false },
-    }));
-    audio.play('property-buy');
-    addLog(`${activePlayer.name} unmortgaged ${tile.name} for $${cost}.`, 'rent');
+    if (!tile) return;
+    const uRes = GameEngine.unmortgageProperty(activePlayer, tile, ownership);
+    if (uRes.success) {
+      setPlayers((prev) => prev.map((p) => (p.id === activePlayer.id ? uRes.updatedPlayer : p)));
+      setOwnership(uRes.updatedOwnership);
+      audio.play('property-buy');
+      addLog(`${activePlayer.name} lifted mortgage on ${tile.name}.`, 'rent');
+    }
   };
 
   // Trade Execution
   const handleExecuteTrade = (offer: TradeOffer): { success: boolean; message: string } => {
+    if (gameSessionType === 'multiplayer') {
+      mpClient.current.proposeTrade(offer);
+      return { success: true, message: 'Trade proposal dispatched across room network!' };
+    }
+
     const fromPlayer = players.find((p) => p.id === offer.fromPlayerId);
     const toPlayer = players.find((p) => p.id === offer.toPlayerId);
-
-    if (!fromPlayer || !toPlayer) return { success: false, message: 'Invalid trade players' };
+    if (!fromPlayer || !toPlayer) return { success: false, message: 'Invalid trade parties' };
 
     if (toPlayer.isBot) {
-      const evaluation = evaluateAITrade(offer, toPlayer, boardTiles, ownership);
-      if (!evaluation.accept) {
-        return { success: false, message: `${toPlayer.name} declined: "${evaluation.reason}"` };
+      const evalRes = evaluateAITrade(offer, toPlayer, boardTiles, ownership);
+      if (!evalRes.accept) {
+        return { success: false, message: `${toPlayer.name} declined: "${evalRes.reason}"` };
       }
     }
 
-    setPlayers((prev) =>
-      prev.map((p) => {
-        if (p.id === fromPlayer.id) {
-          return {
-            ...p,
-            balance: p.balance - offer.offeredMoney + offer.requestedMoney,
-          };
-        }
-        if (p.id === toPlayer.id) {
-          return {
-            ...p,
-            balance: p.balance - offer.requestedMoney + offer.offeredMoney,
-          };
-        }
-        return p;
-      })
-    );
-
-    setOwnership((prev) => {
-      const next = { ...prev };
-      offer.offeredTileIds.forEach((id) => {
-        if (next[id]) next[id] = { ...next[id], ownerId: toPlayer.id };
-      });
-      offer.requestedTileIds.forEach((id) => {
-        if (next[id]) next[id] = { ...next[id], ownerId: fromPlayer.id };
-      });
-      return next;
-    });
-
-    addLog(
-      `🤝 Deal finalized! ${fromPlayer.name} and ${toPlayer.name} traded properties.`,
-      'trade'
-    );
-
-    return { success: true, message: `${toPlayer.name} accepted the trade!` };
+    const tradeRes = GameEngine.executeTrade(offer, players, ownership);
+    if (tradeRes.success) {
+      setPlayers(tradeRes.updatedPlayers);
+      setOwnership(tradeRes.updatedOwnership);
+      addLog(`Deal finalized! ${fromPlayer.name} and ${toPlayer.name} exchanged properties.`, 'trade');
+      return { success: true, message: `${toPlayer.name} accepted the trade proposal!` };
+    }
+    return { success: false, message: tradeRes.error || 'Trade could not be finalized.' };
   };
 
-  // Automated Bot Turn Loop
+  // Chat message sender
+  const handleSendMessage = (text: string) => {
+    if (gameSessionType === 'multiplayer') {
+      mpClient.current.sendChat(text);
+    } else {
+      const msg: ChatMessage = {
+        id: Math.random().toString(36).substring(2, 9),
+        senderId: activePlayer.id,
+        senderName: activePlayer.name,
+        senderColor: activePlayer.color,
+        text,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      };
+      setChatMessages((prev) => [...prev, msg]);
+      audio.play('button-click');
+    }
+  };
+
+  const handleSendEmote = (emoji: string) => {
+    if (gameSessionType === 'multiplayer') {
+      mpClient.current.sendEmote(emoji);
+    }
+    audio.play('button-click');
+  };
+
+  // Automated Single-Player AI Turn Loop
   useEffect(() => {
-    if (!activePlayer.isBot || activePlayer.bankrupt || winner || auctionTile) return;
+    if (gameSessionType !== 'single' || !activePlayer.isBot || activePlayer.bankrupt || winner || auctionTile) {
+      return;
+    }
 
     let isMounted = true;
 
@@ -1076,19 +1045,19 @@ export default function App() {
     if (gamePhase === 'ready-to-roll' && !isRolling) {
       const timer = setTimeout(() => {
         if (isMounted) {
-          if (activePlayer.inDetention && activePlayer.balance > 400) {
+          if (activePlayer.inDetention && activePlayer.balance > 350) {
             handlePayDetentionBail();
           }
           handleRollDice();
         }
-      }, 1000);
+      }, 950);
       return () => {
         isMounted = false;
         clearTimeout(timer);
       };
     }
 
-    // 2. Action Required (Deciding on purchase, rent, tax)
+    // 2. Action Required
     if (gamePhase === 'action-required') {
       const timer = setTimeout(() => {
         if (!isMounted) return;
@@ -1111,7 +1080,7 @@ export default function App() {
             if (propToMortgage !== null) {
               handleMortgage(propToMortgage);
             } else {
-              declareBankruptcy(activePlayer);
+              declareBankruptcy(activePlayer, pendingRent.recipient.id);
               return;
             }
           }
@@ -1123,7 +1092,7 @@ export default function App() {
           }
           handlePayTax();
         }
-      }, 1200);
+      }, 1100);
 
       return () => {
         isMounted = false;
@@ -1131,18 +1100,16 @@ export default function App() {
       };
     }
 
-    // 3. Turn End (Check if Bot wants to build houses before passing)
+    // 3. Turn End
     if (gamePhase === 'turn-end') {
       const timer = setTimeout(() => {
         if (!isMounted) return;
-
-        const houseCandidate = findAIPropertiesToBuild(activePlayer, boardTiles, ownership);
-        if (houseCandidate !== null) {
-          handleBuyHouse(houseCandidate);
+        const candidate = findAIPropertiesToBuild(activePlayer, boardTiles, ownership);
+        if (candidate !== null) {
+          handleBuyHouse(candidate);
         }
-
         handleEndTurn();
-      }, 1100);
+      }, 1000);
 
       return () => {
         isMounted = false;
@@ -1154,8 +1121,8 @@ export default function App() {
     auctionTile,
     boardTiles,
     canBuyProperty,
-    declareBankruptcy,
     gamePhase,
+    gameSessionType,
     handleBuyHouse,
     handleBuyProperty,
     handleEndTurn,
@@ -1172,50 +1139,92 @@ export default function App() {
     winner,
   ]);
 
-  // Start Custom Game via SetupModal
-  const handleStartCustomGame = (newPlayers: Player[], newSettings: GameSettings) => {
-    setSettings(newSettings);
-    const newTiles = generateBoard(newSettings.boardSize, newSettings.boardTheme);
-    setBoardTiles(newTiles);
-    setPlayers(newPlayers);
-    setActivePlayerIndex(0);
-    setOwnership(initializeOwnership(newTiles));
-    setDice([1, 1]);
-    setGamePhase('ready-to-roll');
-    setDoublesCount(0);
-    setRollSummary(null);
-    setDrawnCard(null);
-    setPendingRent(null);
-    setPendingTax(null);
-    setCanBuyProperty(false);
-    setWinner(null);
-    setAuctionTile(null);
-    setIsSetupOpen(false);
-    const activeMode = newSettings.mode || newSettings.gameMode || 'classic';
-    addLog(
-      `New game initiated with ${newPlayers.length} players in ${activeMode.toUpperCase()} mode!`,
-      'info'
-    );
-  };
-
   return (
     <div className="min-h-screen bg-stone-950 text-stone-100 flex flex-col font-sans selection:bg-amber-500 selection:text-stone-950">
-      {/* Top Header Bar */}
+      {/* 1. MAIN MENU SCREEN */}
+      {appScreen === 'menu' && (
+        <MainMenu
+          playerName={playerName}
+          onUpdatePlayerName={handleUpdatePlayerName}
+          onPlaySinglePlayer={() => {
+            setAppScreen('single-setup');
+            audio.play('ui-click');
+          }}
+          onPlayMultiplayer={() => {
+            setAppScreen('multiplayer-lobby');
+            audio.play('ui-click');
+          }}
+          onOpenRules={() => setIsRulesOpen(true)}
+          onOpenSettings={() => setIsSettingsOpen(true)}
+        />
+      )}
+
+      {/* 2. SINGLE PLAYER SETUP MODAL */}
+      {appScreen === 'single-setup' && (
+        <SinglePlayerSetupModal
+          playerName={playerName}
+          onUpdatePlayerName={handleUpdatePlayerName}
+          onStartGame={handleStartSinglePlayerMatch}
+          onClose={() => setAppScreen('menu')}
+        />
+      )}
+
+      {/* 3. MULTIPLAYER LOBBY MODAL */}
+      {appScreen === 'multiplayer-lobby' && (
+        <MultiplayerLobbyModal
+          room={mpRoom}
+          playerId={mpClient.current.playerId}
+          playerName={playerName}
+          onUpdatePlayerName={handleUpdatePlayerName}
+          onCreateRoom={(character) => mpClient.current.createRoom(playerName, character)}
+          onJoinRoom={(code, character) => mpClient.current.joinRoom(code, playerName, character)}
+          onToggleReady={(ready) => mpClient.current.setReady(ready)}
+          onChangeCharacter={(char) => mpClient.current.changeCharacter(char)}
+          onKickPlayer={(pId) => mpClient.current.kickPlayer(pId)}
+          onUpdateSettings={(s) => mpClient.current.updateSettings(s)}
+          onStartGame={() => mpClient.current.startGame()}
+          onLeaveRoom={() => {
+            mpClient.current.leaveRoom();
+            setMpRoom(null);
+          }}
+          onClose={() => setAppScreen('menu')}
+          errorMessage={mpError}
+        />
+      )}
+
+      {/* 4. OPENING ROLL MODAL */}
+      {openingRollState && (
+        <OpeningRollModal
+          openingRoll={openingRollState}
+          players={players}
+          onProceed={handleProceedFromOpeningRoll}
+          onRerollTie={handleRerollOpeningRollTie}
+        />
+      )}
+
+      {/* TOP HEADER BAR (VISIBLE IN PLAYING SCREEN) */}
       <header className="w-full bg-stone-900 border-b border-stone-800 px-4 py-3 flex items-center justify-between sticky top-0 z-40 shadow-md">
         {/* Brand & Logo */}
         <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-2xl bg-amber-500/20 border border-amber-400/40 flex items-center justify-center text-amber-400 shadow-xs">
+          <button
+            onClick={() => {
+              audio.play('button-click');
+              setAppScreen('menu');
+            }}
+            className="w-9 h-9 rounded-2xl bg-amber-500/20 border border-amber-400/40 flex items-center justify-center text-amber-400 hover:scale-105 transition-transform"
+            title="Return to Main Menu"
+          >
             <Dices className="w-5 h-5" />
-          </div>
+          </button>
           <div>
             <h1 className="text-base sm:text-lg font-black tracking-tight text-stone-100 flex items-center gap-2">
               <span>Town Tycoon 3D</span>
               <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/30 uppercase">
-                {settings.mode || settings.gameMode || 'classic'}
+                {gameSessionType === 'multiplayer' ? 'Online Room' : settings.mode || 'Classic'}
               </span>
             </h1>
             <p className="text-[10px] text-stone-400 hidden sm:block">
-              {BOARD_THEMES[settings.boardTheme || settings.theme || 'classic-town']?.name || 'Classic'} • {boardTiles.length} Spaces • {players.length} Players
+              {BOARD_THEMES[settings.boardTheme || 'classic-town']?.name || 'Classic'} • {boardTiles.length} Spaces • {players.length} Players
             </p>
           </div>
         </div>
@@ -1224,13 +1233,13 @@ export default function App() {
         <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-stone-950 border border-stone-800 shadow-xs">
           <div
             className="w-3 h-3 rounded-full animate-pulse shadow-xs"
-            style={{ backgroundColor: activePlayer.color }}
+            style={{ backgroundColor: activePlayer?.color || '#ef4444' }}
           />
           <span className="text-xs font-bold text-stone-200">
-            {activePlayer.name}'s Turn
+            {activePlayer?.name || 'Player'}'s Turn
           </span>
           <span className="text-[11px] text-amber-400 font-mono font-bold hidden md:inline">
-            (${activePlayer.balance})
+            (${activePlayer?.balance || 0})
           </span>
         </div>
 
@@ -1286,16 +1295,17 @@ export default function App() {
             <Settings className="w-4 h-4 text-stone-300" />
           </button>
 
-          {/* New Game Setup Button */}
+          {/* Main Menu Exit Button */}
           <button
             onClick={() => {
               audio.play('button-click');
-              setIsSetupOpen(true);
+              setAppScreen('menu');
             }}
-            className="px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-stone-950 text-xs font-black transition shadow-md cursor-pointer flex items-center gap-1.5"
+            className="px-3 py-1.5 rounded-xl bg-stone-800 hover:bg-stone-700 text-stone-300 text-xs font-semibold transition border border-stone-700 flex items-center gap-1.5"
+            title="Return to Main Menu"
           >
-            <RotateCcw className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">New Game</span>
+            <Home className="w-3.5 h-3.5 text-amber-400" />
+            <span className="hidden sm:inline">Menu</span>
           </button>
         </div>
       </header>
@@ -1336,7 +1346,7 @@ export default function App() {
                   <Dice
                     dice={dice}
                     isRolling={isRolling}
-                    canRoll={gamePhase === 'ready-to-roll' && !isRolling && !activePlayer.isBot && !activePlayer.isAI}
+                    canRoll={gamePhase === 'ready-to-roll' && !isRolling && !activePlayer.isBot}
                     onRoll={handleRollDice}
                     rollSummary={rollSummary}
                   />
@@ -1362,7 +1372,7 @@ export default function App() {
                     onUseFreePass={handleUseFreePass}
                     onEndTurn={handleEndTurn}
                     canEndTurn={gamePhase === 'turn-end'}
-                    isBotTurn={!!(activePlayer.isBot || activePlayer.isAI)}
+                    isBotTurn={!!activePlayer.isBot}
                   />
                 </div>
               </div>
@@ -1375,7 +1385,7 @@ export default function App() {
               ownership={ownership}
               dice={dice}
               isRolling={isRolling}
-              canRoll={gamePhase === 'ready-to-roll' && !isRolling && !activePlayer.isBot && !activePlayer.isAI}
+              canRoll={gamePhase === 'ready-to-roll' && !isRolling && !activePlayer.isBot}
               onRoll={handleRollDice}
               rollSummary={rollSummary}
               drawnCard={drawnCard}
@@ -1466,110 +1476,57 @@ export default function App() {
             </button>
           </div>
 
-          {/* Active Tab Panel */}
-          <div className="h-[520px] flex flex-col">
+          {/* Sidebar Tab Panels */}
+          <div className="h-[520px] w-full">
             {sidebarTab === 'players' && (
-              <div className="flex flex-col gap-2 h-full">
-                <div className="flex items-center justify-between px-1">
-                  <span className="text-[10px] text-stone-400 font-mono">Ranked by Net Worth</span>
-                  <span className="text-[10px] text-amber-400/90 font-medium">Click player to trade</span>
-                </div>
-                <div className="flex-1 overflow-y-auto">
-                  <PlayerBar
-                    players={players}
-                    activePlayerIndex={activePlayerIndex}
-                    tiles={boardTiles}
-                    ownership={ownership}
-                    onOpenTrade={(targetId) => {
-                      setTradePartnerId(targetId);
-                      setIsTradeOpen(true);
-                    }}
-                    onTileClick={(tileId) => setSelectedTileModal(boardTiles[tileId])}
-                  />
-                </div>
-              </div>
+              <PlayerBar
+                players={players}
+                activePlayerIndex={activePlayerIndex}
+                tiles={boardTiles}
+                ownership={ownership}
+                onOpenTrade={(targetPlayerId?: string) => {
+                  setTradePartnerId(targetPlayerId);
+                  setIsTradeOpen(true);
+                }}
+                onTileClick={(tileId: number) => {
+                  const tile = boardTiles[tileId];
+                  if (tile) setSelectedTileModal(tile);
+                }}
+                onPlayerClick={(player: Player) => setInspectedPlayer(player)}
+              />
             )}
 
             {sidebarTab === 'properties' && (
-              <div className="h-full">
-                <PropertyPanel
-                  tiles={boardTiles}
-                  ownership={ownership}
-                  players={players}
-                  activePlayer={activePlayer}
-                  onSelectTile={(tileId) => setSelectedTileModal(boardTiles[tileId])}
-                />
-              </div>
+              <PropertyPanel
+                tiles={boardTiles}
+                ownership={ownership}
+                players={players}
+                activePlayer={activePlayer}
+                onSelectTile={(tileId: number) => {
+                  const tile = boardTiles[tileId];
+                  if (tile) setSelectedTileModal(tile);
+                }}
+                onHighlightTile={(tileId: number | null) => setHighlightedTileId(tileId)}
+              />
             )}
 
-            {sidebarTab === 'log' && (
-              <div className="h-full">
-                <GameLog entries={logs} />
-              </div>
-            )}
+            {sidebarTab === 'log' && <GameLog entries={gameLogs} />}
 
             {sidebarTab === 'chat' && (
-              <div className="h-full">
-                <ChatPanel
-                  messages={chatMessages}
-                  players={players}
-                  activePlayer={activePlayer}
-                  onSendMessage={handleSendChatMessage}
-                  onSendEmote={handleSendChatEmote}
-                />
-              </div>
+              <ChatPanel
+                messages={chatMessages}
+                players={players}
+                activePlayer={activePlayer}
+                onSendMessage={handleSendMessage}
+                onSendEmote={handleSendEmote}
+              />
             )}
           </div>
         </div>
       </main>
 
-      {/* Live Auction Modal */}
-      {auctionTile && (
-        <AuctionModal
-          auction={{
-            active: true,
-            tileId: auctionTile.id,
-            currentBid: 0,
-            highestBidderId: null,
-            timeLeft: 15,
-            bidders: players.filter((p) => !p.bankrupt).map((p) => p.id),
-            passedPlayerIds: [],
-            history: [],
-          }}
-          tile={auctionTile}
-          tiles={boardTiles}
-          players={players}
-          currentUserId={players.find((p) => !p.isBot && !p.isAI)?.id || players[0]?.id}
-          onAuctionEnd={handleAuctionEnd}
-          onClose={() => setAuctionTile(null)}
-        />
-      )}
-
-      {/* Winner Banner Modal */}
-      {winner && (
-        <div className="fixed inset-0 z-50 bg-stone-950/90 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="bg-stone-900 border-2 border-amber-400 text-stone-100 rounded-3xl p-8 max-w-md w-full text-center shadow-2xl flex flex-col items-center gap-4 animate-in zoom-in-95 duration-200">
-            <div className="w-16 h-16 rounded-2xl bg-amber-500/20 border border-amber-400 flex items-center justify-center text-amber-400">
-              <Trophy className="w-10 h-10 animate-bounce" />
-            </div>
-            <h2 className="text-3xl font-black text-amber-400 tracking-tight">
-              VICTORY!
-            </h2>
-            <p className="text-sm text-stone-300">
-              <span className="font-bold text-white text-base">{winner.name}</span> has acquired the
-              wealthiest portfolio and conquered the Town!
-            </p>
-            <button
-              onClick={() => setIsSetupOpen(true)}
-              className="mt-2 px-6 py-3 rounded-2xl bg-amber-500 hover:bg-amber-400 text-stone-950 font-black text-sm tracking-wider uppercase transition shadow-lg shadow-amber-500/30 cursor-pointer"
-            >
-              Play Again
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Property Deed Modal */}
+      {/* MODALS */}
+      {/* 1. Property Deed Inspector Modal */}
       {selectedTileModal && (
         <PropertyModal
           tile={selectedTileModal}
@@ -1579,13 +1536,35 @@ export default function App() {
           activePlayer={activePlayer}
           onClose={() => setSelectedTileModal(null)}
           onBuyHouse={handleBuyHouse}
-          onSellHouse={handleSellHouse}
           onMortgage={handleMortgage}
           onUnmortgage={handleUnmortgage}
         />
       )}
 
-      {/* Trade Modal */}
+      {/* 2. Player Inspector Modal */}
+      {inspectedPlayer && (
+        <PlayerInspectorModal
+          player={inspectedPlayer}
+          activePlayer={activePlayer}
+          tiles={boardTiles}
+          ownership={ownership}
+          onClose={() => setInspectedPlayer(null)}
+          onOpenTrade={(targetPlayerId: string) => {
+            setTradePartnerId(targetPlayerId);
+            setInspectedPlayer(null);
+            setIsTradeOpen(true);
+          }}
+          onTileClick={(tileId: number) => {
+            const tile = boardTiles[tileId];
+            if (tile) {
+              setInspectedPlayer(null);
+              setSelectedTileModal(tile);
+            }
+          }}
+        />
+      )}
+
+      {/* 3. Trade Modal */}
       {isTradeOpen && (
         <TradeModal
           activePlayer={activePlayer}
@@ -1597,21 +1576,45 @@ export default function App() {
         />
       )}
 
-      {/* Rules Modal */}
-      {isRulesOpen && <RulesModal onClose={() => setIsRulesOpen(false)} />}
-
-      {/* Settings Modal */}
-      {isSettingsOpen && (
-        <SettingsModal
-          settings={settings}
-          onUpdateSettings={handleUpdateSettings}
-          onClose={() => setIsSettingsOpen(false)}
-          isHost={true}
+      {/* 4. Live Town Auction Modal */}
+      {auctionTile && (
+        <AuctionModal
+          auction={{
+            active: true,
+            tileId: auctionTile.id,
+            currentBid: Math.max(10, Math.floor((auctionTile.cost || 100) * 0.5)),
+            highestBidderId: null,
+            timeLeft: 20,
+            bidders: players.filter((p) => !p.bankrupt).map((p) => p.id),
+            history: [],
+          }}
+          tile={auctionTile}
+          players={players}
+          currentUserId={activePlayer.id}
+          onAuctionEnd={handleAuctionEnd}
+          onClose={() => setAuctionTile(null)}
         />
       )}
 
-      {/* Setup / New Game Modal */}
-      {isSetupOpen && <SetupModal onStartGame={handleStartCustomGame} />}
+      {/* 5. Rules & Guide Modal */}
+      {isRulesOpen && <RulesModal onClose={() => setIsRulesOpen(false)} />}
+
+      {/* 6. Settings Modal */}
+      {isSettingsOpen && (
+        <SettingsModal
+          settings={settings}
+          onClose={() => setIsSettingsOpen(false)}
+          onUpdateSettings={(newSettings: Partial<GameSettings>) => {
+            setSettings((prev) => {
+              const merged: GameSettings = { ...prev, ...newSettings };
+              if (newSettings.boardTheme && newSettings.boardTheme !== prev.boardTheme) {
+                setBoardTiles(generateBoard(merged.boardSize, merged.boardTheme));
+              }
+              return merged;
+            });
+          }}
+        />
+      )}
     </div>
   );
 }

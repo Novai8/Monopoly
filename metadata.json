@@ -1,6 +1,6 @@
 {
   "name": "Town Tycoon 3D",
-  "description": "3D property-trading board game with dynamic 2-10 players, custom boards, auction systems, voice chat, and bot difficulties.",
+  "description": "Polished property-trading board game featuring single player vs bots, online multiplayer with bot fill-in, auctions, classic property names, and rich visual themes.",
   "requestFramePermissions": ["microphone"],
   "majorCapabilities": [
     "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
