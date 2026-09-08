@@ -25,63 +25,51 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          import re
-
-          # Server: authoritative auction sequencing, strategic bots, and personality data.
           p = Path('server.ts')
           s = p.read_text()
           s = s.replace("import { shouldAIBuyProperty } from './src/utils/aiLogic';", "import { shouldAIBuyProperty, shouldAIBidOnAuction, findAIPropertiesToBuild } from './src/utils/aiLogic';")
           s = s.replace("const botActionLocks = new Set<string>();", "const botActionLocks = new Map<string, number>();")
           old = """    const wantsProperty = shouldAIBuyProperty(bot, tile, tiles, gs.ownership);\n    const nextBid = gs.auction.currentBid + 10;\n    return wantsProperty && bot.balance >= nextBid ? { botId: bot.id, action: { type: 'PLACE_BID', amount: nextBid } } : { botId: bot.id, action: { type: 'PASS_AUCTION' } };"""
           new = """    const decision = shouldAIBidOnAuction(bot, tile, gs.auction.currentBid, tiles, gs.ownership, gs.players);\n    const nextBid = gs.auction.currentBid + 10;\n    return decision.shouldBid && nextBid <= decision.maxBid ? { botId: bot.id, action: { type: 'PLACE_BID', amount: nextBid } } : { botId: bot.id, action: { type: 'PASS_AUCTION' } };"""
-          assert old in s
-          s = s.replace(old, new)
+          assert old in s; s = s.replace(old, new)
           old = """    const lockKey = `${room.code}:${decision.botId}:${room.gameState?.gamePhase}:${room.gameState?.auction?.currentBidderId || ''}`;\n    if (botActionLocks.has(lockKey)) return;\n    botActionLocks.add(lockKey);\n    setTimeout(() => {\n      botActionLocks.delete(lockKey);"""
           new = """    const auctionTurnId = room.gameState?.auction?.turnId ?? 0;\n    const lockKey = `${room.code}:${decision.botId}:${room.gameState?.gamePhase}:${auctionTurnId}:${room.gameState?.activePlayerIndex}`;\n    if (botActionLocks.has(lockKey)) return;\n    botActionLocks.set(lockKey, Date.now());\n    setTimeout(() => {\n      botActionLocks.delete(lockKey);"""
-          assert old in s
-          s = s.replace(old, new)
+          assert old in s; s = s.replace(old, new)
+          old = """    case 'ready-to-roll': return { botId: bot.id, action: { type: 'ROLL_DICE' } };"""
+          new = """    case 'ready-to-roll': {\n      const buildId = findAIPropertiesToBuild(bot, tiles, gs.ownership);\n      return buildId !== null ? { botId: bot.id, action: { type: 'UPGRADE_PROPERTY', tileId: buildId } } : { botId: bot.id, action: { type: 'ROLL_DICE' } };\n    }"""
+          assert old in s; s = s.replace(old, new)
           old = """  auction.currentBidderIndex = nextIndex;\n  auction.currentBidderId = auction.bidders[nextIndex];\n  auction.timeLeft = action === 'timeout' ? 5 : 15;"""
           new = """  auction.currentBidderIndex = nextIndex;\n  auction.currentBidderId = auction.bidders[nextIndex];\n  auction.turnId = (auction.turnId ?? 0) + 1;\n  auction.timeLeft = action === 'timeout' ? 5 : 15;"""
-          assert old in s
-          s = s.replace(old, new)
+          assert old in s; s = s.replace(old, new)
           old = """gs.auction = { active: true, tileId: tile.id, currentBid: Math.max(10, Math.round((tile.cost || 100) * 0.5)), highestBidderId: null, currentBidderId: bidders[firstIndex] || null, currentBidderIndex: firstIndex, timeLeft: 20, bidders, passedPlayerIds: [], history: [] };"""
           new = """gs.auction = { active: true, tileId: tile.id, currentBid: Math.max(10, Math.round((tile.cost || 100) * 0.5)), highestBidderId: null, currentBidderId: bidders[firstIndex] || null, currentBidderIndex: firstIndex, timeLeft: 20, bidders, passedPlayerIds: [], history: [], turnId: 1 };"""
-          assert old in s
-          s = s.replace(old, new)
-          # Never allow an auction's bot timers to survive its completion.
+          assert old in s; s = s.replace(old, new)
           s = s.replace("auction.active = false; gs.auction = null; gs.gamePhase = 'turn-end';\n    broadcastToRoom(room.code, { type: 'STATE_UPDATE', gameState: gs }); return;", "auction.active = false; gs.auction = null; gs.gamePhase = 'turn-end';\n    for (const key of botActionLocks.keys()) if (key.startsWith(`${room.code}:`)) botActionLocks.delete(key);\n    broadcastToRoom(room.code, { type: 'STATE_UPDATE', gameState: gs }); return;")
           s = s.replace("if (nextIndex === null) { auction.active = false; gs.auction = null; gs.gamePhase = 'turn-end'; broadcastToRoom(room.code, { type: 'STATE_UPDATE', gameState: gs }); return; }", "if (nextIndex === null) { auction.active = false; gs.auction = null; gs.gamePhase = 'turn-end'; for (const key of botActionLocks.keys()) if (key.startsWith(`${room.code}:`)) botActionLocks.delete(key); broadcastToRoom(room.code, { type: 'STATE_UPDATE', gameState: gs }); return; }")
-          # Give bots a real strategic development step before rolling.
-          old = """  if (gs.gamePhase === 'auction' && gs.auction?.active && gs.auction.currentBidderId) {"""
-          new = """  if (gs.gamePhase === 'auction' && gs.auction?.active && gs.auction.currentBidderId) {"""
-          # Add personality assignment to server-created bots.
           old = """const bot: Player = { id: `bot-${generateId()}`, name: uniqueName, isAI: true, isBot: true, color, character: botCharacters[botIndex % botCharacters.length], balance: room.settings.startingMoney || 1500, position: 0, inDetention: false, detentionTurns: 0, detentionPasses: 0, bankrupt: false, voiceState: 'quiet', isHost: false, ready: true, difficulty: action.difficulty || room.settings.botDifficulty || 'normal' };"""
           new = """const personalities = ['conservative', 'aggressive', 'collector', 'investor', 'opportunist', 'balanced'] as const;\n      const bot: Player = { id: `bot-${generateId()}`, name: uniqueName, isAI: true, isBot: true, color, character: botCharacters[botIndex % botCharacters.length], balance: room.settings.startingMoney || 1500, position: 0, inDetention: false, detentionTurns: 0, detentionPasses: 0, bankrupt: false, voiceState: 'quiet', isHost: false, ready: true, difficulty: action.difficulty || room.settings.botDifficulty || 'normal', personality: action.personality || personalities[botIndex % personalities.length] };"""
-          assert old in s
-          s = s.replace(old, new)
+          assert old in s; s = s.replace(old, new)
           p.write_text(s)
 
-          # Single-player auction: a bot must pass through the auction state machine, not the active-turn callback.
           p = Path('src/App.tsx')
-          s = p.read_text()
-          s = s.replace("  shouldAIBuyProperty,\n} from './utils/aiLogic';", "  shouldAIBuyProperty,\n  shouldAIBidOnAuction,\n} from './utils/aiLogic';")
+          s = p.read_text().replace("  shouldAIBuyProperty,\n} from './utils/aiLogic';", "  shouldAIBuyProperty,\n  shouldAIBidOnAuction,\n} from './utils/aiLogic';")
           old = """      const shouldBid = shouldAIBuyProperty(bidder, boardTiles[auction.tileId], boardTiles, ownership);\n      const amount = auction.currentBid + 10;\n      if (shouldBid && bidder.balance >= amount) {\n        const bidderIndex = auction.bidders.indexOf(bidder.id);\n        const next = nextEligibleAuctionIndex({ ...auction, highestBidderId: bidder.id, currentBid: amount }, players, bidderIndex);\n        setAuction({ ...auction, currentBid: amount, highestBidderId: bidder.id, currentBidderId: next === null ? null : auction.bidders[next], currentBidderIndex: next ?? bidderIndex, timeLeft: 15, history: [...auction.history, { playerId: bidder.id, amount, time: new Date().toISOString() }] });\n      } else passAuction();"""
           new = """      const tile = boardTiles[auction.tileId];\n      if (!tile) return;\n      const decision = shouldAIBidOnAuction(bidder, tile, auction.currentBid, boardTiles, ownership, players);\n      const amount = auction.currentBid + 10;\n      if (decision.shouldBid && amount <= decision.maxBid && bidder.balance >= amount) {\n        const bidderIndex = auction.bidders.indexOf(bidder.id);\n        const next = nextEligibleAuctionIndex({ ...auction, highestBidderId: bidder.id, currentBid: amount }, players, bidderIndex);\n        setAuction({ ...auction, currentBid: amount, highestBidderId: bidder.id, currentBidderId: next === null ? null : auction.bidders[next], currentBidderIndex: next ?? bidderIndex, timeLeft: 15, history: [...auction.history, { playerId: bidder.id, amount, time: new Date().toISOString() }] });\n      } else {\n        const passed = auction.passedPlayerIds.includes(bidder.id) ? auction.passedPlayerIds : [...auction.passedPlayerIds, bidder.id];\n        const remaining = auction.bidders.filter((id) => !passed.includes(id) && !players.find((player) => player.id === id)?.bankrupt);\n        if (remaining.length === 1 && auction.highestBidderId === remaining[0]) completeAuction({ ...auction, passedPlayerIds: passed });\n        else {\n          const next = nextEligibleAuctionIndex({ ...auction, passedPlayerIds: passed }, players, auction.bidders.indexOf(bidder.id));\n          if (next === null) completeAuction({ ...auction, passedPlayerIds: passed });\n          else setAuction({ ...auction, passedPlayerIds: passed, currentBidderId: auction.bidders[next], currentBidderIndex: next, timeLeft: 15 });\n        }\n      }"""
-          assert old in s
-          s = s.replace(old, new)
-          # Add varied single-player personalities without exposing hidden information.
+          assert old in s; s = s.replace(old, new)
           old = """      localPlayers.push(createPlayer(`bot-${index + 1}`, botNames[index % botNames.length], botCharacters[index % botCharacters.length].id, config.startingMoney, colors[(index + 1) % colors.length], true, config.difficulty));"""
           new = """      const personalities = ['conservative', 'aggressive', 'collector', 'investor', 'opportunist', 'balanced'] as const;\n      const bot = createPlayer(`bot-${index + 1}`, botNames[index % botNames.length], botCharacters[index % botCharacters.length].id, config.startingMoney, colors[(index + 1) % colors.length], true, config.difficulty);\n      bot.personality = personalities[index % personalities.length];\n      localPlayers.push(bot);"""
-          assert old in s
-          s = s.replace(old, new)
+          assert old in s; s = s.replace(old, new)
           p.write_text(s)
 
-          # Remove stale 3D branding from the 2D product identity.
           p = Path('src/components/MainMenu.tsx')
           s = p.read_text().replace('TOWN TYCOON <span className="text-amber-400">3D</span>', 'TOWN TYCOON').replace('physical miniature tabletop world with Single Player and Online Multiplayer.', 'colorful tabletop board with Single Player and Online Multiplayer.')
           p.write_text(s)
 
-          # Lobby polish: identify bots/humans and expose all valid bot difficulty controls.
+          p = Path('src/components/AuctionModal.tsx')
+          s = p.read_text()
+          s = s.replace("<span>Your Available Cash: <strong className=\"text-emerald-400 font-mono\">${me.balance}</strong></span>", "<div className=\"flex flex-wrap gap-x-4 gap-y-1\"><span>Your Cash: <strong className=\"text-emerald-400 font-mono\">${me.balance}</strong></span><span>Safe Bid Ceiling: <strong className=\"text-amber-300 font-mono\">${Math.max(0, me.balance - (me.difficulty === 'expert' ? 300 : me.difficulty === 'hard' ? 220 : me.difficulty === 'normal' ? 140 : 80))}</strong></span></div>")
+          p.write_text(s)
+
           p = Path('src/components/MultiplayerLobbyModal.tsx')
           s = p.read_text()
           s = s.replace("  ShieldCheck,\n  Radio,", "  ShieldCheck,\n  Radio,\n  Bot,\n  UserRound,")
@@ -89,8 +77,7 @@ jobs:
           s = s.replace("{p.isHost && (", "{p.isBot ? <span className=\"flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-300 text-[10px] font-bold\"><Bot className=\"w-3 h-3\" /> BOT</span> : <span className=\"flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-stone-800 text-stone-300 text-[10px] font-bold\"><UserRound className=\"w-3 h-3\" /> HUMAN</span>}\n                            {p.isHost && (")
           marker = "            {/* Player Controls: Ready Up & Character Swap */}"
           insert = """            {isHost && room.players.length < room.playerLimit && (\n              <div className=\"p-3.5 rounded-xl bg-blue-500/5 border border-blue-500/20 space-y-2\">\n                <div className=\"flex items-center justify-between\"><span className=\"text-xs font-bold text-stone-200\">Add computer player</span><span className=\"text-[10px] text-stone-500\">{room.playerLimit - room.players.length} slots left</span></div>\n                <div className=\"grid grid-cols-4 gap-2\">\n                  {(['easy','normal','hard','expert'] as BotDifficulty[]).map((difficulty) => <button key={difficulty} type=\"button\" onClick={() => onAddBot(difficulty)} className=\"py-2 rounded-xl bg-stone-900 border border-stone-700 hover:border-blue-400 text-stone-200 text-[10px] font-black uppercase transition-colors\">+ {difficulty}</button>)}\n                </div>\n              </div>\n            )}\n\n"""
-          assert marker in s
-          s = s.replace(marker, insert + marker)
+          assert marker in s; s = s.replace(marker, insert + marker)
           p.write_text(s)
           PY
       - name: Commit applied source changes
@@ -102,7 +89,7 @@ jobs:
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add server.ts src/App.tsx src/components/MainMenu.tsx src/components/AuctionModal.tsx src/components/MultiplayerLobbyModal.tsx
           git commit -m "fix: stabilize auctions, bots, lobby, and 2D UI"
-          git push origin HEAD:${{ github.head_ref }}
+          git push --force-with-lease origin HEAD:${{ github.head_ref }}
       - name: Install dependencies
         run: npm install
       - name: Type check
