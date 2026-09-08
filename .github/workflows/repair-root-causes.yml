@@ -20,7 +20,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
 
       - name: Install dependencies
         run: npm install
@@ -50,7 +49,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add server.ts src/types.ts src/utils/aiLogic.ts src/utils/multiplayerClient.ts src/App.tsx scripts .github/workflows/repair-root-causes.yml
+          git add server.ts src/types.ts src/utils/aiLogic.ts src/utils/multiplayerClient.ts src/App.tsx scripts .github/workflows/repair-root-causes.yml package-lock.json
           git diff --cached --quiet && { echo "No source changes detected"; exit 1; }
           git commit -m "fix: repair multiplayer lobby and bounded bot auctions"
           git push origin HEAD:fix/lobby-auction-root-causes
