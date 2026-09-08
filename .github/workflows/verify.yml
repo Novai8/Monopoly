@@ -10,12 +10,17 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
         with:
           node-version: 20
-      - run: npm install
-      - run: npm run lint
+      - name: Install dependencies
+        run: npm install
+      - name: Type check
+        run: npm run lint
       - name: Server type check
         run: npx tsc --noEmit --skipLibCheck --module ESNext --moduleResolution bundler --target ES2020 server.ts
-      - run: npm run build
+      - name: Production build
+        run: npm run build
