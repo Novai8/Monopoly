@@ -18,7 +18,7 @@ import {
   TradeOffer,
   AuctionState,
 } from './src/types';
-import { generateBoard } from './src/data/boardData';
+import { generateClassicBoard } from './src/data/classicBoard';
 import { initializeOwnership } from './src/utils/gameHelpers';
 import { GameEngine } from './src/engine/gameEngine';
 
@@ -115,26 +115,12 @@ setInterval(() => {
 // Auction countdown timer tick
 setInterval(() => {
   rooms.forEach((room) => {
-    if (room.status !== 'playing' || !room.gameState || !room.gameState.auction) return;
-    const auc = room.gameState.auction;
-    if (auc.active && auc.timeLeft > 0) {
-      auc.timeLeft -= 1;
-      if (auc.timeLeft === 0) {
-        // Finalize auction
-        const tiles = roomBoardTiles.get(room.code) || [];
-        const result = GameEngine.finalizeAuction(auc, room.gameState.players, room.gameState.ownership);
-        room.gameState.players = result.updatedPlayers;
-        room.gameState.ownership = result.updatedOwnership;
-        room.gameState.auction = null;
-        room.gameState.gamePhase = 'turn-end';
-        room.gameState.logs.unshift({
-          id: generateId(),
-          text: result.message,
-          type: 'auction',
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        });
-        broadcastToRoom(room.code, { type: 'STATE_UPDATE', gameState: room.gameState });
-      }
+    const auction = room.gameState?.auction;
+    if (room.status !== 'playing' || !room.gameState || !auction?.active) return;
+    if (auction.timeLeft > 0) auction.timeLeft -= 1;
+    if (auction.timeLeft === 0 && auction.currentBidderId) {
+      if (!auction.passedPlayerIds.includes(auction.currentBidderId)) auction.passedPlayerIds.push(auction.currentBidderId);
+      advanceAuction(room, auction.currentBidderId, 'timeout');
     }
   });
 }, 1000);
@@ -188,6 +174,49 @@ function advanceToNextTurn(room: MultiplayerRoom) {
     nextPlayer.detentionTurns += 1;
   }
 
+  broadcastToRoom(room.code, { type: 'STATE_UPDATE', gameState: gs });
+}
+
+
+
+function getAuctionEligibleIds(gs: ServerGameState, auction: AuctionState): string[] {
+  return auction.bidders.filter((id) => {
+    const player = gs.players.find((candidate) => candidate.id === id);
+    return Boolean(player && !player.bankrupt && !auction.passedPlayerIds.includes(id));
+  });
+}
+
+function advanceAuction(room: MultiplayerRoom, actorId: string, action: 'bid' | 'pass' | 'timeout') {
+  const gs = room.gameState;
+  const auction = gs?.auction;
+  if (!gs || !auction?.active) return;
+  const eligible = getAuctionEligibleIds(gs, auction);
+  if (eligible.length === 0) {
+    auction.active = false; gs.auction = null; gs.gamePhase = 'turn-end';
+    broadcastToRoom(room.code, { type: 'STATE_UPDATE', gameState: gs }); return;
+  }
+  const actorIndex = auction.bidders.indexOf(actorId);
+  let nextIndex: number | null = null;
+  for (let offset = 1; offset <= auction.bidders.length; offset += 1) {
+    const candidateIndex = (actorIndex + offset) % auction.bidders.length;
+    if (eligible.includes(auction.bidders[candidateIndex])) { nextIndex = candidateIndex; break; }
+  }
+  if (eligible.length === 1) {
+    const winnerId = eligible[0];
+    const winner = gs.players.find((player) => player.id === winnerId);
+    const tile = (roomBoardTiles.get(room.code) || []).find((candidate) => candidate.id === auction.tileId);
+    if (winner && tile && winner.balance >= auction.currentBid) {
+      winner.balance -= auction.currentBid;
+      gs.ownership[auction.tileId] = { ownerId: winner.id, houses: 0, isMortgaged: false };
+      gs.logs.unshift({ id: generateId(), text: `${winner.name} won ${tile.name} for $${auction.currentBid}.`, type: 'auction', timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) });
+    }
+    auction.active = false; gs.auction = null; gs.gamePhase = 'turn-end';
+    broadcastToRoom(room.code, { type: 'STATE_UPDATE', gameState: gs }); return;
+  }
+  if (nextIndex === null) { auction.active = false; gs.auction = null; gs.gamePhase = 'turn-end'; broadcastToRoom(room.code, { type: 'STATE_UPDATE', gameState: gs }); return; }
+  auction.currentBidderIndex = nextIndex;
+  auction.currentBidderId = auction.bidders[nextIndex];
+  auction.timeLeft = action === 'timeout' ? 5 : 15;
   broadcastToRoom(room.code, { type: 'STATE_UPDATE', gameState: gs });
 }
 
@@ -440,7 +469,7 @@ function handleClientAction(ws: WebSocket, action: ClientAction) {
       }
 
       // Generate board tiles according to settings
-      const tiles = generateBoard(room.settings.boardSize, room.settings.boardTheme);
+      const tiles = generateClassicBoard(room.settings.boardSize, room.settings.boardTheme);
       roomBoardTiles.set(room.code, tiles);
 
       // Initialize starting money on all players
@@ -767,41 +796,20 @@ function handleClientAction(ws: WebSocket, action: ClientAction) {
       const binding = socketToPlayer.get(ws);
       if (!binding) return;
       const room = rooms.get(binding.roomCode);
-      if (!room || !room.gameState) return;
-
+      if (!room?.gameState) return;
       const gs = room.gameState;
       const player = gs.players[gs.activePlayerIndex];
-      if (player.id !== binding.playerId) return;
-
-      const tiles = roomBoardTiles.get(room.code) || [];
-      const tile = tiles.find((t) => t.id === action.tileId);
-
-      // If auctions are enabled, trigger an auction for all players!
-      if (room.settings.auctionsEnabled && tile) {
-        const activeBidders = gs.players.filter((p) => !p.bankrupt).map((p) => p.id);
-        const auction: AuctionState = {
-          active: true,
-          tileId: tile.id,
-          currentBid: Math.round((tile.cost || 100) * 0.5), // Starting bid
-          highestBidderId: null,
-          timeLeft: 20,
-          bidders: activeBidders,
-          passedPlayerIds: [],
-          history: [],
-        };
-        gs.auction = auction;
-        gs.gamePhase = 'auction';
-        gs.logs.unshift({
-          id: generateId(),
-          text: `${player.name} passed on ${tile.name}. Town Hall Auction opened with starting bid $${auction.currentBid}!`,
-          type: 'auction',
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        });
-      } else {
-        gs.canBuyProperty = false;
-        gs.gamePhase = gs.doublesCount > 0 ? 'ready-to-roll' : 'turn-end';
-      }
-
+      if (player.id !== binding.playerId || gs.gamePhase !== 'action-required' || !gs.canBuyProperty) return;
+      const tile = (roomBoardTiles.get(room.code) || []).find((candidate) => candidate.id === action.tileId);
+      if (!tile) return;
+      if (room.settings.auctionsEnabled) {
+        const bidders = gs.players.filter((candidate) => !candidate.bankrupt).map((candidate) => candidate.id);
+        const startFrom = bidders.indexOf(player.id);
+        const firstIndex = bidders.length > 1 ? (startFrom + 1) % bidders.length : 0;
+        gs.auction = { active: true, tileId: tile.id, currentBid: Math.max(10, Math.round((tile.cost || 100) * 0.5)), highestBidderId: null, currentBidderId: bidders[firstIndex] || null, currentBidderIndex: firstIndex, timeLeft: 20, bidders, passedPlayerIds: [], history: [] };
+        gs.canBuyProperty = false; gs.gamePhase = 'auction';
+        gs.logs.unshift({ id: generateId(), text: `${player.name} passed on ${tile.name}. Auction opened at $${gs.auction.currentBid}.`, type: 'auction', timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) });
+      } else { gs.canBuyProperty = false; gs.gamePhase = gs.doublesCount > 0 ? 'ready-to-roll' : 'turn-end'; }
       broadcastToRoom(room.code, { type: 'STATE_UPDATE', gameState: gs });
       break;
     }
@@ -938,40 +946,19 @@ function handleClientAction(ws: WebSocket, action: ClientAction) {
       const binding = socketToPlayer.get(ws);
       if (!binding) return;
       const room = rooms.get(binding.roomCode);
-      if (!room || !room.gameState || !room.gameState.auction || !room.gameState.auction.active) return;
-
-      const gs = room.gameState;
-      const auc = gs.auction;
-      const player = gs.players.find((p) => p.id === binding.playerId);
-      if (!player || player.bankrupt) return;
-
+      const gs = room?.gameState;
+      const auction = gs?.auction;
+      if (!room || !gs || !auction?.active) return;
+      const player = gs.players.find((candidate) => candidate.id === binding.playerId);
+      if (!player || player.bankrupt || !auction.bidders.includes(player.id) || auction.passedPlayerIds.includes(player.id)) return;
+      if (auction.currentBidderId !== player.id) { sendToClient(ws, { type: 'ERROR', message: 'It is not your auction turn.' }); return; }
       const bidAmount = Math.round(Number(action.amount));
-      if (bidAmount <= auc.currentBid) {
-        sendToClient(ws, { type: 'ERROR', message: 'Bid must exceed current highest bid.' });
-        return;
-      }
-      if (player.balance < bidAmount) {
-        sendToClient(ws, { type: 'ERROR', message: 'Insufficient balance to place this bid.' });
-        return;
-      }
-
-      auc.currentBid = bidAmount;
-      auc.highestBidderId = player.id;
-      auc.timeLeft = 15; // Reset countdown on new valid bid
-      auc.history.push({
-        playerId: player.id,
-        amount: bidAmount,
-        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      });
-
-      gs.logs.unshift({
-        id: generateId(),
-        text: `${player.name} raised auction bid to $${bidAmount}!`,
-        type: 'auction',
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      });
-
-      broadcastToRoom(room.code, { type: 'STATE_UPDATE', gameState: gs });
+      if (!Number.isFinite(bidAmount) || bidAmount <= auction.currentBid) { sendToClient(ws, { type: 'ERROR', message: 'Bid must exceed the current bid.' }); return; }
+      if (player.balance < bidAmount) { sendToClient(ws, { type: 'ERROR', message: 'Insufficient balance to place this bid.' }); return; }
+      auction.currentBid = bidAmount; auction.highestBidderId = player.id;
+      auction.history.push({ playerId: player.id, amount: bidAmount, time: new Date().toISOString() });
+      gs.logs.unshift({ id: generateId(), text: `${player.name} raised the auction to $${bidAmount}.`, type: 'auction', timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) });
+      advanceAuction(room, player.id, 'bid');
       break;
     }
 
@@ -979,22 +966,14 @@ function handleClientAction(ws: WebSocket, action: ClientAction) {
       const binding = socketToPlayer.get(ws);
       if (!binding) return;
       const room = rooms.get(binding.roomCode);
-      if (!room || !room.gameState || !room.gameState.auction) return;
-
-      const gs = room.gameState;
-      const auc = gs.auction;
-      if (!auc.passedPlayerIds) auc.passedPlayerIds = [];
-      if (!auc.passedPlayerIds.includes(binding.playerId)) {
-        auc.passedPlayerIds.push(binding.playerId);
-      }
-
-      // If all active bidders except one passed, conclude early
-      const remainingBidders = auc.bidders.filter((bId) => !auc.passedPlayerIds?.includes(bId));
-      if (remainingBidders.length <= 1) {
-        auc.timeLeft = 1; // Trigger immediate finalization
-      }
-
-      broadcastToRoom(room.code, { type: 'STATE_UPDATE', gameState: gs });
+      const gs = room?.gameState;
+      const auction = gs?.auction;
+      if (!room || !gs || !auction?.active) return;
+      const player = gs.players.find((candidate) => candidate.id === binding.playerId);
+      if (!player || player.bankrupt || !auction.bidders.includes(player.id) || auction.passedPlayerIds.includes(player.id)) return;
+      if (auction.currentBidderId !== player.id) { sendToClient(ws, { type: 'ERROR', message: 'It is not your auction turn.' }); return; }
+      auction.passedPlayerIds.push(player.id);
+      advanceAuction(room, player.id, 'pass');
       break;
     }
 
@@ -1251,6 +1230,11 @@ function handleClientDisconnect(ws: WebSocket) {
       playerName: player.name,
     });
     if (room.gameState) {
+      const auction = room.gameState.auction;
+      if (auction?.active && auction.currentBidderId === playerId) {
+        if (!auction.passedPlayerIds.includes(playerId)) auction.passedPlayerIds.push(playerId);
+        advanceAuction(room, playerId, 'pass');
+      }
       room.gameState.logs.unshift({
         id: generateId(),
         text: `${player.name} temporarily disconnected. Waiting for reconnection...`,
@@ -1281,7 +1265,7 @@ async function startServer() {
   }
 
   server.listen(PORT, '0.0.0.0', () => {
-    console.log(`Town Tycoon 3D Server listening on http://0.0.0.0:${PORT}`);
+    console.log(`Town Tycoon Server listening on http://0.0.0.0:${PORT}`);
   });
 }
 
