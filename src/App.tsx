@@ -351,8 +351,28 @@ export default function App() {
     if (!drawnCard) return;
     if (gameSessionType === 'multiplayer') { mpClient.current.drawCard(); return; }
     const result = GameEngine.executeCard(drawnCard, activePlayer, players, boardTiles, ownership, boardTiles.length);
-    setPlayers(result.updatedAllPlayers); setOwnership(result.updatedOwnership); setDrawnCard(null); addLog(result.message, 'card'); setGamePhase('turn-end');
-  }, [activePlayer, boardTiles, drawnCard, gameSessionType, ownership, players, addLog]);
+    setPlayers(result.updatedAllPlayers); setOwnership(result.updatedOwnership); setDrawnCard(null); addLog(result.message, 'card');
+    if (drawnCard.actionType === 'go-detention') { setGamePhase('turn-end'); return; }
+    if (result.targetPosition !== undefined) {
+      const movedPlayer = result.updatedPlayer;
+      const landingTile = boardTiles[result.targetPosition];
+      const landing = GameEngine.resolveLanding(movedPlayer, landingTile, boardTiles, result.updatedOwnership, result.updatedAllPlayers, settings, 0);
+      setRollSummary(landing.description);
+      if (landing.type === 'unowned') { setCanBuyProperty(true); setGamePhase('action-required'); }
+      else if (landing.type === 'rent' && landing.recipientId && landing.amount) {
+        const recipient = result.updatedAllPlayers.find((candidate) => candidate.id === landing.recipientId);
+        if (recipient) { setPendingRent({ amount: landing.amount, recipient }); setGamePhase('action-required'); } else setGamePhase('turn-end');
+      } else if (landing.type === 'tax' && landing.amount) { setPendingTax(landing.amount); setGamePhase('action-required'); }
+      else if (landing.type === 'card' && landing.card) { setDrawnCard(landing.card); setGamePhase('card-choice'); }
+      else if (landing.type === 'detention') {
+        const jail = boardTiles.find((candidate) => candidate.type === 'detention');
+        setPlayers((previous) => previous.map((candidate) => candidate.id === movedPlayer.id ? { ...candidate, position: jail?.id ?? 0, inDetention: true, detentionTurns: 0 } : candidate));
+        setGamePhase('turn-end');
+      } else setGamePhase('turn-end');
+      return;
+    }
+    setGamePhase(dice[0] === dice[1] && doublesCount > 0 ? 'ready-to-roll' : 'turn-end');
+  }, [activePlayer, boardTiles, dice, drawnCard, doublesCount, gameSessionType, ownership, players, settings, addLog]);
 
   const upgradeProperty = useCallback((tileId: number) => {
     if (gameSessionType === 'multiplayer') { mpClient.current.upgradeProperty(tileId); return; }
@@ -487,7 +507,7 @@ export default function App() {
     <div className="min-h-screen bg-stone-950 text-stone-100 flex flex-col font-sans overflow-x-hidden">
       {appScreen === 'menu' && <MainMenu playerName={playerName} onUpdatePlayerName={updatePlayerName} onPlaySinglePlayer={() => setAppScreen('single-setup')} onPlayMultiplayer={() => setAppScreen('multiplayer-lobby')} onOpenRules={() => setRulesOpen(true)} onOpenSettings={() => setSettingsOpen(true)} />}
       {appScreen === 'single-setup' && <SinglePlayerSetupModal playerName={playerName} onUpdatePlayerName={updatePlayerName} onStartGame={startSinglePlayer} onClose={() => setAppScreen('menu')} />}
-      {appScreen === 'multiplayer-lobby' && <MultiplayerLobbyModal room={mpRoom} playerId={mpClient.current.playerId} playerName={playerName} onUpdatePlayerName={updatePlayerName} onCreateRoom={(character) => mpClient.current.createRoom(playerName, character)} onJoinRoom={(code, character) => mpClient.current.joinRoom(code, playerName, character)} onToggleReady={(ready) => mpClient.current.setReady(ready)} onChangeCharacter={(character) => mpClient.current.changeCharacter(character)} onKickPlayer={(id) => mpClient.current.kickPlayer(id)} onUpdateSettings={(value) => mpClient.current.updateSettings(value)} onStartGame={() => mpClient.current.startGame()} onLeaveRoom={() => { mpClient.current.leaveRoom(); setMpRoom(null); }} onClose={() => setAppScreen('menu')} errorMessage={mpError} />}
+      {appScreen === 'multiplayer-lobby' && <MultiplayerLobbyModal room={mpRoom} playerId={mpClient.current.playerId} playerName={playerName} onUpdatePlayerName={updatePlayerName} onCreateRoom={(character) => mpClient.current.createRoom(playerName, character)} onJoinRoom={(code, character) => mpClient.current.joinRoom(code, playerName, character)} onToggleReady={(ready) => mpClient.current.setReady(ready)} onChangeCharacter={(character) => mpClient.current.changeCharacter(character)} onKickPlayer={(id) => mpClient.current.kickPlayer(id)} onAddBot={(difficulty) => mpClient.current.addBot(difficulty)} onUpdateSettings={(value) => mpClient.current.updateSettings(value)} onStartGame={() => mpClient.current.startGame()} onLeaveRoom={() => { mpClient.current.leaveRoom(); setMpRoom(null); }} onClose={() => setAppScreen('menu')} errorMessage={mpError} />}
 
       {appScreen === 'playing' && (
         <>

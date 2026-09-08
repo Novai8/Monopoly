@@ -3,6 +3,7 @@ import {
   ChatMessage,
   ClientAction,
   GameSettings,
+  BotDifficulty,
   MultiplayerRoom,
   QuickEmote,
   ServerGameState,
@@ -155,6 +156,8 @@ export class MultiplayerClient {
   public changeCharacter(character: CharacterId) { this.send({ type: 'CHANGE_CHARACTER', character }); }
   public updateSettings(settings: Partial<GameSettings>) { this.send({ type: 'UPDATE_SETTINGS', settings }); }
   public kickPlayer(playerId: string) { this.send({ type: 'KICK_PLAYER', playerId }); }
+  public addBot(difficulty?: BotDifficulty, name?: string) { this.send({ type: 'ADD_BOT', difficulty, name }); }
+  public removeBot(botId: string) { this.send({ type: 'REMOVE_BOT', botId }); }
   public startGame() { this.send({ type: 'START_GAME' }); }
   public rollOpeningRoll() { this.send({ type: 'OPENING_ROLL_ACTION' }); }
   public rollDice() { this.send({ type: 'ROLL_DICE' }); }

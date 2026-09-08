@@ -4,6 +4,7 @@ import {
   GameSettings,
   MultiplayerRoom,
   Player,
+  BotDifficulty,
 } from '../types';
 import { CHARACTERS, CHARACTER_LIST } from '../data/charactersData';
 import { audio } from '../utils/audio';
@@ -33,6 +34,7 @@ interface MultiplayerLobbyModalProps {
   onToggleReady: (ready: boolean) => void;
   onChangeCharacter: (character: CharacterId) => void;
   onKickPlayer: (targetPlayerId: string) => void;
+  onAddBot: (difficulty?: BotDifficulty) => void;
   onUpdateSettings: (settings: Partial<GameSettings>) => void;
   onStartGame: () => void;
   onLeaveRoom: () => void;
@@ -50,6 +52,7 @@ export const MultiplayerLobbyModal: React.FC<MultiplayerLobbyModalProps> = ({
   onToggleReady,
   onChangeCharacter,
   onKickPlayer,
+  onAddBot,
   onUpdateSettings,
   onStartGame,
   onLeaveRoom,
@@ -397,6 +400,15 @@ export const MultiplayerLobbyModal: React.FC<MultiplayerLobbyModalProps> = ({
                     <Crown className="w-4 h-4" />
                     <span>Host Controls</span>
                   </div>
+                  <button
+                    type="button"
+                    onClick={() => onAddBot(room.settings.botDifficulty || 'normal')}
+                    disabled={totalCount >= room.playerLimit}
+                    className="px-2.5 py-1.5 rounded-lg bg-blue-500/15 border border-blue-500/30 text-blue-300 text-[10px] font-black disabled:opacity-40"
+                  >
+                    + ADD BOT
+                  </button>
+
                   <button
                     type="button"
                     onClick={() => setShowSettingsEdit(!showSettingsEdit)}
