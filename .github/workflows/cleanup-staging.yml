@@ -1,0 +1,24 @@
+name: Cleanup staging
+on:
+  push:
+    branches: [gameplay-bot-card-staging]
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Remove generated artifacts
+        run: |
+          git rm -r --cached --ignore-unmatch node_modules dist
+          rm -rf node_modules dist
+          git status --short
+      - name: Commit clean tree
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "chore: remove generated build artifacts"
+          git push origin HEAD:gameplay-bot-card-staging
