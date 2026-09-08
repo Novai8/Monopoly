@@ -211,7 +211,7 @@ function getBotAction(room: MultiplayerRoom): { botId: string; action: ClientAct
   const bot = gs.players[gs.activePlayerIndex];
   if (!bot?.isBot || bot.bankrupt) return null;
   switch (gs.gamePhase) {
-    case 'ready-to-roll': { const buildId = findAIPropertiesToBuild(bot, tiles, gs.ownership); return buildId !== null ? { botId: bot.id, action: { type: 'UPGRADE_PROPERTY', tileId: buildId } } : { botId: bot.id, action: { type: 'ROLL_DICE' } }; }
+    case 'ready-to-roll': { const tiles = roomBoardTiles.get(room.code) || []; const buildId = findAIPropertiesToBuild(bot, tiles, gs.ownership); return buildId !== null ? { botId: bot.id, action: { type: 'UPGRADE_PROPERTY', tileId: buildId } } : { botId: bot.id, action: { type: 'ROLL_DICE' } }; }
     case 'action-required': {
       if (gs.canBuyProperty) {
         const tiles = roomBoardTiles.get(room.code) || [];
