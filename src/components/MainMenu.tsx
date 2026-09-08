@@ -59,10 +59,10 @@ export const MainMenu: React.FC<MainMenuProps> = ({
             Dual-Mode Tabletop Edition
           </div>
           <h1 className="text-4xl sm:text-5xl font-black tracking-tight text-white drop-shadow-md">
-            TOWN TYCOON <span className="text-amber-400">3D</span>
+            TOWN TYCOON
           </h1>
           <p className="text-sm text-stone-300 max-w-sm">
-            Build, trade, and conquer in a physical miniature tabletop world with Single Player and Online Multiplayer.
+            Build, trade, and conquer in a colorful tabletop board with Single Player and Online Multiplayer.
           </p>
         </div>
 

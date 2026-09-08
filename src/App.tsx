@@ -28,6 +28,7 @@ import {
   findAIPropertiesToBuild,
   findAIPropertyToMortgage,
   shouldAIBuyProperty,
+  shouldAIBidOnAuction,
 } from './utils/aiLogic';
 import { audio } from './utils/audio';
 import { GameEngine } from './engine/gameEngine';
@@ -425,13 +426,24 @@ export default function App() {
     if (!bidder?.isBot || bidder.bankrupt) return;
     const timer = window.setTimeout(() => {
       if (!auction.active || auction.currentBidderId !== bidder.id) return;
-      const shouldBid = shouldAIBuyProperty(bidder, boardTiles[auction.tileId], boardTiles, ownership);
+      const tile = boardTiles[auction.tileId];
+      if (!tile) return;
+      const decision = shouldAIBidOnAuction(bidder, tile, auction.currentBid, boardTiles, ownership, players);
       const amount = auction.currentBid + 10;
-      if (shouldBid && bidder.balance >= amount) {
+      if (decision.shouldBid && amount <= decision.maxBid && bidder.balance >= amount) {
         const bidderIndex = auction.bidders.indexOf(bidder.id);
         const next = nextEligibleAuctionIndex({ ...auction, highestBidderId: bidder.id, currentBid: amount }, players, bidderIndex);
         setAuction({ ...auction, currentBid: amount, highestBidderId: bidder.id, currentBidderId: next === null ? null : auction.bidders[next], currentBidderIndex: next ?? bidderIndex, timeLeft: 15, history: [...auction.history, { playerId: bidder.id, amount, time: new Date().toISOString() }] });
-      } else passAuction();
+      } else {
+        const passed = auction.passedPlayerIds.includes(bidder.id) ? auction.passedPlayerIds : [...auction.passedPlayerIds, bidder.id];
+        const remaining = auction.bidders.filter((id) => !passed.includes(id) && !players.find((player) => player.id === id)?.bankrupt);
+        if (remaining.length === 1 && auction.highestBidderId === remaining[0]) completeAuction({ ...auction, passedPlayerIds: passed });
+        else {
+          const next = nextEligibleAuctionIndex({ ...auction, passedPlayerIds: passed }, players, auction.bidders.indexOf(bidder.id));
+          if (next === null) completeAuction({ ...auction, passedPlayerIds: passed });
+          else setAuction({ ...auction, passedPlayerIds: passed, currentBidderId: auction.bidders[next], currentBidderIndex: next, timeLeft: 15 });
+        }
+      }
     }, 800);
     return () => window.clearTimeout(timer);
   }, [auction, boardTiles, gameSessionType, ownership, passAuction, players]);
@@ -476,7 +488,10 @@ export default function App() {
     const botCharacters = CHARACTER_LIST.filter((character) => character.id !== config.character);
     const localPlayers: Player[] = [createPlayer('p1', config.playerName, config.character, config.startingMoney, colors[0], false)];
     for (let index = 0; index < config.aiCount; index += 1) {
-      localPlayers.push(createPlayer(`bot-${index + 1}`, botNames[index % botNames.length], botCharacters[index % botCharacters.length].id, config.startingMoney, colors[(index + 1) % colors.length], true, config.difficulty));
+      const personalities = ['conservative', 'aggressive', 'collector', 'investor', 'opportunist', 'balanced'] as const;
+      const bot = createPlayer(`bot-${index + 1}`, botNames[index % botNames.length], botCharacters[index % botCharacters.length].id, config.startingMoney, colors[(index + 1) % colors.length], true, config.difficulty);
+      bot.personality = personalities[index % personalities.length];
+      localPlayers.push(bot);
     }
     setSettings(localSettings); setBoardTiles(tiles); setPlayers(localPlayers); setOwnership(initializeOwnership(tiles)); setActivePlayerIndex(0); setWinner(null); setAuction(null);
     setOpeningRollState(GameEngine.conductOpeningRollStep(localPlayers)); setGamePhase('opening-roll'); setGameSessionType('single'); setAppScreen('playing'); addLog('Opening roll started.', 'roll');

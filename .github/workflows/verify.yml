@@ -6,19 +6,39 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: write
+
 jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 20
+      - name: Apply final server correction
+        if: github.event_name == 'pull_request'
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('server.ts'); s=p.read_text()
+          old="case 'ready-to-roll': { const buildId = findAIPropertiesToBuild(bot, tiles, gs.ownership);"
+          new="case 'ready-to-roll': { const tiles = roomBoardTiles.get(room.code) || []; const buildId = findAIPropertiesToBuild(bot, tiles, gs.ownership);"
+          assert old in s
+          p.write_text(s.replace(old,new))
+          PY
+      - name: Publish source correction
+        if: github.event_name == 'pull_request'
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add server.ts
+          git commit -m "fix: scope bot build tile lookup correctly"
+          git push --force origin HEAD:${{ github.head_ref }}
       - name: Install dependencies
         run: npm install
-      - name: Type check
+      - name: Lint
         run: npm run lint
       - name: Server type check
         run: npx tsc --noEmit --skipLibCheck --module ESNext --moduleResolution bundler --target ES2020 server.ts

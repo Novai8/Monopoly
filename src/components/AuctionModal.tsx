@@ -143,7 +143,7 @@ export const AuctionModal: React.FC<AuctionModalProps> = ({
         {me && (
           <div className="flex flex-col gap-3 pt-2 border-t border-stone-800">
             <div className="flex items-center justify-between text-xs text-stone-300 px-1">
-              <span>Your Available Cash: <strong className="text-emerald-400 font-mono">${me.balance}</strong></span>
+              <div className="flex flex-wrap gap-x-4 gap-y-1"><span>Your Cash: <strong className="text-emerald-400 font-mono">${me.balance}</strong></span><span>Safe Bid Ceiling: <strong className="text-amber-300 font-mono">${Math.max(0, me.balance - (me.difficulty === 'expert' ? 300 : me.difficulty === 'hard' ? 220 : me.difficulty === 'normal' ? 140 : 80))}</strong></span></div>
               {hasPassed ? <span className="text-rose-400 font-bold">You have passed</span> : isCurrentBidder ? <span className="text-amber-400 font-medium">Your turn to bid</span> : <span className="text-stone-500">Waiting for another bidder</span>}
             </div>
 

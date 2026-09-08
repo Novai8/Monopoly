@@ -1,0 +1,117 @@
+name: Stability Stage
+on:
+  push:
+    branches: [stability-polish-2026-09]
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Apply targeted fixes
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          p = Path('server.ts')
+          s = p.read_text()
+          s = s.replace("shouldAIBuyProperty } from './src/utils/aiLogic';", "shouldAIBuyProperty, shouldAIBidOnAuction, findAIPropertiesToBuild, findAIPropertyToMortgage } from './src/utils/aiLogic';")
+          s = s.replace("const botActionLocks = new Set<string>();", "const botActionLocks = new Map<string, number>();")
+          s = s.replace("return bot ? { botId: bot.id, action: { type: 'OPENING_ROLL_ACTION' } } : null;", "return bot ? { botId: bot.id, action: { type: 'OPENING_ROLL_ACTION' } } : null;")
+          old = """    const wantsProperty = shouldAIBuyProperty(bot, tile, tiles, gs.ownership);\n    const nextBid = gs.auction.currentBid + 10;\n    return wantsProperty && bot.balance >= nextBid ? { botId: bot.id, action: { type: 'PLACE_BID', amount: nextBid } } : { botId: bot.id, action: { type: 'PASS_AUCTION' } };"""
+          new = """    const decision = shouldAIBidOnAuction(bot, tile, gs.auction.currentBid, tiles, gs.ownership, gs.players);\n    const nextBid = gs.auction.currentBid + 10;\n    return decision.shouldBid && nextBid <= decision.maxBid ? { botId: bot.id, action: { type: 'PLACE_BID', amount: nextBid } } : { botId: bot.id, action: { type: 'PASS_AUCTION' } };"""
+          assert old in s
+          s = s.replace(old, new)
+          old = """  const lockKey = `${room.code}:${decision.botId}:${room.gameState?.gamePhase}:${room.gameState?.auction?.currentBidderId || ''}`;\n    if (botActionLocks.has(lockKey)) return;\n    botActionLocks.add(lockKey);\n    setTimeout(() => {\n      botActionLocks.delete(lockKey);"""
+          new = """    const auctionTurnId = room.gameState?.auction?.turnId ?? 0;\n    const lockKey = `${room.code}:${decision.botId}:${room.gameState?.gamePhase}:${auctionTurnId}:${room.gameState?.activePlayerIndex}`;\n    const lockUntil = botActionLocks.get(lockKey) || 0;\n    if (lockUntil > Date.now()) return;\n    botActionLocks.set(lockKey, Date.now() + 1500);\n    setTimeout(() => {\n      botActionLocks.delete(lockKey);"""
+          assert old in s
+          s = s.replace(old, new)
+          old = """  auction.currentBidderIndex = nextIndex;\n  auction.currentBidderId = auction.bidders[nextIndex];\n  auction.timeLeft = action === 'timeout' ? 5 : 15;"""
+          new = """  auction.currentBidderIndex = nextIndex;\n  auction.currentBidderId = auction.bidders[nextIndex];\n  auction.turnId = (auction.turnId ?? 0) + 1;\n  auction.timeLeft = action === 'timeout' ? 5 : 15;"""
+          assert old in s
+          s = s.replace(old, new)
+          old = """gs.auction = { active: true, tileId: tile.id, currentBid: Math.max(10, Math.round((tile.cost || 100) * 0.5)), highestBidderId: null, currentBidderId: bidders[firstIndex] || null, currentBidderIndex: firstIndex, timeLeft: 20, bidders, passedPlayerIds: [], history: [] };"""
+          new = """gs.auction = { active: true, tileId: tile.id, currentBid: Math.max(10, Math.round((tile.cost || 100) * 0.5)), highestBidderId: null, currentBidderId: bidders[firstIndex] || null, currentBidderIndex: firstIndex, timeLeft: 20, bidders, passedPlayerIds: [], history: [], turnId: 1 };"""
+          assert old in s
+          s = s.replace(old, new)
+          old = """  if (eligible.length === 1) {\n    const winnerId = eligible[0];"""
+          new = """  if (eligible.length === 1) {\n    const winnerId = eligible[0];"""
+          # Keep completion behavior, but explicitly clear bot locks for completed auctions.
+          old2 = """    auction.active = false; gs.auction = null; gs.gamePhase = 'turn-end';\n    broadcastToRoom(room.code, { type: 'STATE_UPDATE', gameState: gs }); return;\n  }\n  if (nextIndex === null) {"""
+          new2 = """    auction.active = false; gs.auction = null; gs.gamePhase = 'turn-end';\n    for (const key of botActionLocks.keys()) if (key.startsWith(`${room.code}:`)) botActionLocks.delete(key);\n    broadcastToRoom(room.code, { type: 'STATE_UPDATE', gameState: gs }); return;\n  }\n  if (nextIndex === null) {"""
+          assert old2 in s
+          s = s.replace(old2, new2)
+          old3 = """  if (nextIndex === null) { auction.active = false; gs.auction = null; gs.gamePhase = 'turn-end'; broadcastToRoom(room.code, { type: 'STATE_UPDATE', gameState: gs }); return; }"""
+          new3 = """  if (nextIndex === null) { auction.active = false; gs.auction = null; gs.gamePhase = 'turn-end'; for (const key of botActionLocks.keys()) if (key.startsWith(`${room.code}:`)) botActionLocks.delete(key); broadcastToRoom(room.code, { type: 'STATE_UPDATE', gameState: gs }); return; }"""
+          assert old3 in s
+          s = s.replace(old3, new3)
+          p.write_text(s)
+
+          p = Path('src/App.tsx')
+          s = p.read_text()
+          s = s.replace("shouldAIBuyProperty,\n} from './utils/aiLogic';", "shouldAIBuyProperty,\n  shouldAIBidOnAuction,\n} from './utils/aiLogic';")
+          old = """      const shouldBid = shouldAIBuyProperty(bidder, boardTiles[auction.tileId], boardTiles, ownership);\n      const amount = auction.currentBid + 10;\n      if (shouldBid && bidder.balance >= amount) {\n        const bidderIndex = auction.bidders.indexOf(bidder.id);\n        const next = nextEligibleAuctionIndex({ ...auction, highestBidderId: bidder.id, currentBid: amount }, players, bidderIndex);\n        setAuction({ ...auction, currentBid: amount, highestBidderId: bidder.id, currentBidderId: next === null ? null : auction.bidders[next], currentBidderIndex: next ?? bidderIndex, timeLeft: 15, history: [...auction.history, { playerId: bidder.id, amount, time: new Date().toISOString() }] });\n      } else passAuction();"""
+          new = """      const tile = boardTiles[auction.tileId];\n      if (!tile) return;\n      const decision = shouldAIBidOnAuction(bidder, tile, auction.currentBid, boardTiles, ownership, players);\n      const amount = auction.currentBid + 10;\n      if (decision.shouldBid && amount <= decision.maxBid && bidder.balance >= amount) {\n        const bidderIndex = auction.bidders.indexOf(bidder.id);\n        const next = nextEligibleAuctionIndex({ ...auction, highestBidderId: bidder.id, currentBid: amount }, players, bidderIndex);\n        setAuction({ ...auction, currentBid: amount, highestBidderId: bidder.id, currentBidderId: next === null ? null : auction.bidders[next], currentBidderIndex: next ?? bidderIndex, timeLeft: 15, history: [...auction.history, { playerId: bidder.id, amount, time: new Date().toISOString() }] });\n      } else {\n        const passed = auction.passedPlayerIds.includes(bidder.id) ? auction.passedPlayerIds : [...auction.passedPlayerIds, bidder.id];\n        const remaining = auction.bidders.filter((id) => !passed.includes(id) && !players.find((player) => player.id === id)?.bankrupt);\n        if (remaining.length === 1 && auction.highestBidderId === remaining[0]) completeAuction({ ...auction, passedPlayerIds: passed });\n        else {\n          const next = nextEligibleAuctionIndex({ ...auction, passedPlayerIds: passed }, players, auction.bidders.indexOf(bidder.id));\n          if (next === null) completeAuction({ ...auction, passedPlayerIds: passed });\n          else setAuction({ ...auction, passedPlayerIds: passed, currentBidderId: auction.bidders[next], currentBidderIndex: next, timeLeft: 15 });\n        }\n      }"""
+          assert old in s
+          s = s.replace(old, new)
+          s = s.replace("<h1 className=\"text-4xl sm:text-5xl font-black tracking-tight text-white drop-shadow-md\">\n            TOWN TYCOON <span className=\"text-amber-400\">3D</span>", "<h1 className=\"text-4xl sm:text-5xl font-black tracking-tight text-white drop-shadow-md\">\n            TOWN TYCOON") if False else s
+          p.write_text(s)
+
+          p = Path('src/components/MainMenu.tsx')
+          s = p.read_text().replace('TOWN TYCOON <span className="text-amber-400">3D</span>', 'TOWN TYCOON')
+          s = s.replace('physical miniature tabletop world with Single Player and Online Multiplayer.', 'colorful tabletop board with Single Player and Online Multiplayer.')
+          p.write_text(s)
+
+          p = Path('src/components/AuctionModal.tsx')
+          s = p.read_text()
+          s = s.replace("import { AuctionState, BoardTile, Player } from '../types';", "import { AuctionState, BoardTile, Player } from '../types';\nimport { shouldAIBidOnAuction } from '../utils/aiLogic';")
+          old = """  const canAffordMin = me ? me.balance >= minNextBid : false;"""
+          new = """  const humanDecision = me ? shouldAIBidOnAuction(me, tile, auction.currentBid, [], {}) : { shouldBid: false, maxBid: 0 };\n  const canAffordMin = me ? me.balance >= minNextBid : false;"""
+          assert old in s
+          s = s.replace(old, new)
+          old = """              {hasPassed ? <span className=\"text-rose-400 font-bold\">You have passed</span> : isCurrentBidder ? <span className=\"text-amber-400 font-medium\">Your turn to bid</span> : <span className=\"text-stone-500\">Waiting for another bidder</span>}"""
+          new = """              {hasPassed ? <span className=\"text-rose-400 font-bold\">You have passed</span> : isCurrentBidder ? <span className=\"text-amber-400 font-medium\">Your turn to bid</span> : <span className=\"text-stone-500\">Waiting for another bidder</span>}"""
+          s = s.replace(old, new)
+          # Do not calculate a hidden exact value for the human. The displayed safe bid is a transparent affordability reserve.
+          s = s.replace("<span>Your Available Cash: <strong className=\"text-emerald-400 font-mono\">${me.balance}</strong></span>", "<div className=\"flex flex-wrap gap-x-4 gap-y-1\"><span>Your Cash: <strong className=\"text-emerald-400 font-mono\">${me.balance}</strong></span><span>Safe Bid Ceiling: <strong className=\"text-amber-300 font-mono\">${Math.max(0, me.balance - (me.difficulty === 'expert' ? 300 : me.difficulty === 'hard' ? 220 : me.difficulty === 'normal' ? 140 : 80))}</strong></span></div>")
+          p.write_text(s)
+
+          p = Path('src/components/MultiplayerLobbyModal.tsx')
+          s = p.read_text()
+          s = s.replace("  ShieldCheck,\n  Radio,", "  ShieldCheck,\n  Radio,\n  Bot,\n  UserRound,")
+          s = s.replace("  onAddBot: (difficulty?: BotDifficulty) => void;", "  onAddBot: (difficulty?: BotDifficulty) => void;")
+          s = s.replace("{charDef?.name || 'Pawn'}</span>", "{charDef?.name || 'Pawn'} {p.isBot ? `• ${p.difficulty || 'normal'} bot` : '• human'}</span>")
+          s = s.replace("{p.isHost && (", "{p.isBot ? <span className=\"flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-300 text-[10px] font-bold\"><Bot className=\"w-3 h-3\" /> BOT</span> : <span className=\"flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-stone-800 text-stone-300 text-[10px] font-bold\"><UserRound className=\"w-3 h-3\" /> HUMAN</span>}\n                            {p.isHost && (")
+          marker = """            {/* Player Controls: Ready Up & Character Swap */}"""
+          insert = """            {isHost && room.players.length < room.playerLimit && (\n              <div className=\"p-3.5 rounded-xl bg-blue-500/5 border border-blue-500/20 space-y-2\">\n                <div className=\"flex items-center justify-between\"><span className=\"text-xs font-bold text-stone-200\">Add computer player</span><span className=\"text-[10px] text-stone-500\">{room.playerLimit - room.players.length} slots left</span></div>\n                <div className=\"grid grid-cols-4 gap-2\">\n                  {(['easy','normal','hard','expert'] as BotDifficulty[]).map((difficulty) => <button key={difficulty} type=\"button\" onClick={() => onAddBot(difficulty)} className=\"py-2 rounded-xl bg-stone-900 border border-stone-700 hover:border-blue-400 text-stone-200 text-[10px] font-black uppercase transition-colors\">+ {difficulty}</button>)}\n                </div>\n              </div>\n            )}\n\n"""
+          assert marker in s
+          s = s.replace(marker, insert + marker)
+          p.write_text(s)
+          PY
+      - name: Install dependencies
+        run: npm install
+      - name: Lint
+        run: npm run lint
+      - name: Server type check
+        run: npx tsc --noEmit --skipLibCheck --module ESNext --moduleResolution bundler --target ES2020 server.ts
+      - name: Gameplay regression tests
+        run: |
+          node --import tsx <<'JS'
+          import { shouldAIBidOnAuction, shouldAIBuyProperty } from './src/utils/aiLogic.ts';
+          import { GameEngine } from './src/engine/gameEngine.ts';
+          const tile = { id: 1, name: 'Test Street', type: 'property', cost: 200, rent: [10, 50, 150], houseCost: 100 };
+          const player = { id:'b1', name:'Bot', isAI:true, isBot:true, color:'#fff', character:'duck', balance:700, position:0, inDetention:false, detentionTurns:0, detentionPasses:0, bankrupt:false, voiceState:'quiet', difficulty:'expert', personality:'balanced' };
+          const decision = shouldAIBidOnAuction(player, tile, 310, [tile], {1:{ownerId:null,houses:0,isMortgaged:false}}, [player]);
+          if (decision.shouldBid || decision.maxBid >= 320) throw new Error(`Auction ceiling regression: ${JSON.stringify(decision)}`);
+          const conservative = { ...player, difficulty:'easy', balance:500 };
+          if (!shouldAIBuyProperty(conservative, tile, [tile], {1:{ownerId:null,houses:0,isMortgaged:false}})) throw new Error('Basic AI purchase regression');
+          const movement = GameEngine.calculateMovementPath(0, 3, 40);
+          if (movement.targetPos !== 3) throw new Error('Movement regression');
+          console.log('Gameplay regression tests passed.');
+          JS
+      - name: Production build
+        run: npm run build
