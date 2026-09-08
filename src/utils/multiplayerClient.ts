@@ -8,6 +8,7 @@ import {
   ServerGameState,
   ServerMessage,
   TradeOffer,
+  WebRTCSignal,
 } from '../types';
 
 export type MultiplayerEventListener = {
@@ -31,25 +32,20 @@ export class MultiplayerClient {
   public roomCode: string | null = null;
   public playerId: string | null = null;
   public sessionToken: string | null = null;
-  public isConnected: boolean = false;
+  public isConnected = false;
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 5;
-
-  // WebRTC Peer Connections for Optional Voice Chat
   private localStream: MediaStream | null = null;
   private peerConnections: Map<string, RTCPeerConnection> = new Map();
-  public isVoiceMuted: boolean = false;
-  public isVoiceActive: boolean = false;
+  public isVoiceMuted = false;
+  public isVoiceActive = false;
 
   public static getInstance(): MultiplayerClient {
-    if (!MultiplayerClient.instance) {
-      MultiplayerClient.instance = new MultiplayerClient();
-    }
+    if (!MultiplayerClient.instance) MultiplayerClient.instance = new MultiplayerClient();
     return MultiplayerClient.instance;
   }
 
   private constructor() {
-    // Restore session if exists
     try {
       this.roomCode = sessionStorage.getItem('tt_room_code');
       this.playerId = sessionStorage.getItem('tt_player_id');
@@ -57,9 +53,11 @@ export class MultiplayerClient {
     } catch (_) {}
   }
 
-  public addListener(listener: MultiplayerEventListener) {
+  public addListener(listener: MultiplayerEventListener): () => void {
     this.listeners.add(listener);
-    return () => this.listeners.delete(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
   }
 
   public connect(): Promise<boolean> {
@@ -68,49 +66,35 @@ export class MultiplayerClient {
         resolve(true);
         return;
       }
-
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const url = `${protocol}//${window.location.host}`;
-
       try {
-        this.ws = new WebSocket(url);
-      } catch (err) {
+        this.ws = new WebSocket(`${protocol}//${window.location.host}`);
+      } catch {
         resolve(false);
         return;
       }
-
       this.ws.onopen = () => {
         this.isConnected = true;
         this.reconnectAttempts = 0;
-        this.listeners.forEach((l) => l.onConnectionChange?.(true));
-
-        // If we have saved session token and room, attempt auto-reconnect
+        this.listeners.forEach((listener) => listener.onConnectionChange?.(true));
         if (this.roomCode && this.playerId && this.sessionToken) {
-          this.send({
-            type: 'RECONNECT',
-            roomCode: this.roomCode,
-            playerId: this.playerId,
-            sessionToken: this.sessionToken,
-          });
+          this.send({ type: 'RECONNECT', roomCode: this.roomCode, playerId: this.playerId, sessionToken: this.sessionToken });
         }
         resolve(true);
       };
-
       this.ws.onmessage = (event) => {
         try {
-          const msg: ServerMessage = JSON.parse(event.data);
-          this.handleServerMessage(msg);
-        } catch (err) {
-          console.error('Failed to parse server message', err);
+          const message: ServerMessage = JSON.parse(event.data);
+          this.handleServerMessage(message);
+        } catch (error) {
+          console.error('Failed to parse server message', error);
         }
       };
-
       this.ws.onclose = () => {
         this.isConnected = false;
-        this.listeners.forEach((l) => l.onConnectionChange?.(false));
+        this.listeners.forEach((listener) => listener.onConnectionChange?.(false));
         this.attemptReconnect();
       };
-
       this.ws.onerror = () => {
         this.isConnected = false;
         resolve(false);
@@ -120,192 +104,75 @@ export class MultiplayerClient {
 
   private attemptReconnect() {
     if (this.reconnectAttempts < this.maxReconnectAttempts && this.roomCode && this.sessionToken) {
-      this.reconnectAttempts++;
-      setTimeout(() => {
-        this.connect();
-      }, 1500 * Math.pow(1.5, this.reconnectAttempts));
+      this.reconnectAttempts += 1;
+      window.setTimeout(() => this.connect(), 1500 * Math.pow(1.5, this.reconnectAttempts));
     }
   }
 
   public send(action: ClientAction) {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+    if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(action));
-    } else {
-      // Try connecting first then send
-      this.connect().then((connected) => {
-        if (connected && this.ws && this.ws.readyState === WebSocket.OPEN) {
-          this.ws.send(JSON.stringify(action));
-        }
-      });
+      return;
     }
+    this.connect().then((connected) => {
+      if (connected && this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(action));
+    });
   }
 
-  private handleServerMessage(msg: ServerMessage) {
-    switch (msg.type) {
+  private handleServerMessage(message: ServerMessage) {
+    switch (message.type) {
       case 'ROOM_CREATED':
       case 'ROOM_JOINED': {
-        this.roomCode = msg.roomCode;
-        this.playerId = msg.playerId;
-        this.sessionToken = msg.sessionToken;
+        this.roomCode = message.roomCode;
+        this.playerId = message.playerId;
+        this.sessionToken = message.sessionToken;
         try {
-          sessionStorage.setItem('tt_room_code', msg.roomCode);
-          sessionStorage.setItem('tt_player_id', msg.playerId);
-          sessionStorage.setItem('tt_session_token', msg.sessionToken);
+          sessionStorage.setItem('tt_room_code', message.roomCode);
+          sessionStorage.setItem('tt_player_id', message.playerId);
+          sessionStorage.setItem('tt_session_token', message.sessionToken);
         } catch (_) {}
-
-        if (msg.type === 'ROOM_CREATED') {
-          this.listeners.forEach((l) => l.onRoomCreated?.(msg));
-        } else {
-          this.listeners.forEach((l) => l.onRoomJoined?.(msg));
-        }
+        this.listeners.forEach((listener) => {
+          if (message.type === 'ROOM_CREATED') listener.onRoomCreated?.(message);
+          else listener.onRoomJoined?.(message);
+        });
         break;
       }
-
-      case 'ROOM_UPDATED': {
-        this.listeners.forEach((l) => l.onRoomUpdated?.(msg.room));
-        break;
-      }
-
-      case 'GAME_STARTED': {
-        this.listeners.forEach((l) => l.onGameStarted?.(msg));
-        break;
-      }
-
-      case 'STATE_UPDATE': {
-        this.listeners.forEach((l) => l.onStateUpdate?.(msg.gameState));
-        break;
-      }
-
-      case 'CHAT_MESSAGE': {
-        this.listeners.forEach((l) => l.onChatMessage?.(msg.message));
-        break;
-      }
-
-      case 'EMOTE_EVENT': {
-        this.listeners.forEach((l) => l.onEmote?.(msg.emote));
-        break;
-      }
-
-      case 'PLAYER_DISCONNECTED': {
-        this.listeners.forEach((l) => l.onPlayerDisconnected?.(msg));
-        break;
-      }
-
-      case 'PLAYER_RECONNECTED': {
-        this.listeners.forEach((l) => l.onPlayerReconnected?.(msg));
-        break;
-      }
-
-      case 'VOICE_SIGNAL': {
-        this.handleVoiceSignal(msg.fromPlayerId, msg.signal);
-        break;
-      }
-
-      case 'ERROR': {
-        this.listeners.forEach((l) => l.onError?.(msg.message));
-        break;
-      }
+      case 'ROOM_UPDATED': this.listeners.forEach((listener) => listener.onRoomUpdated?.(message.room)); break;
+      case 'GAME_STARTED': this.listeners.forEach((listener) => listener.onGameStarted?.(message)); break;
+      case 'STATE_UPDATE': this.listeners.forEach((listener) => listener.onStateUpdate?.(message.gameState)); break;
+      case 'CHAT_MESSAGE': this.listeners.forEach((listener) => listener.onChatMessage?.(message.message)); break;
+      case 'EMOTE_EVENT': this.listeners.forEach((listener) => listener.onEmote?.(message.emote)); break;
+      case 'PLAYER_DISCONNECTED': this.listeners.forEach((listener) => listener.onPlayerDisconnected?.(message)); break;
+      case 'PLAYER_RECONNECTED': this.listeners.forEach((listener) => listener.onPlayerReconnected?.(message)); break;
+      case 'VOICE_SIGNAL': this.handleVoiceSignal(message.fromPlayerId, message.signal); break;
+      case 'ERROR': this.listeners.forEach((listener) => listener.onError?.(message.message)); break;
     }
   }
 
-  // ========================================================
-  // USER ACTIONS
-  // ========================================================
-  public createRoom(playerName: string, character: CharacterId) {
-    this.send({ type: 'CREATE_ROOM', playerName, character });
-  }
-
-  public joinRoom(roomCode: string, playerName: string, character?: CharacterId) {
-    this.send({ type: 'JOIN_ROOM', roomCode, playerName, character });
-  }
-
-  public setReady(ready: boolean) {
-    this.send({ type: 'SET_READY', ready });
-  }
-
-  public changeCharacter(character: CharacterId) {
-    this.send({ type: 'CHANGE_CHARACTER', character });
-  }
-
-  public updateSettings(settings: Partial<GameSettings>) {
-    this.send({ type: 'UPDATE_SETTINGS', settings });
-  }
-
-  public kickPlayer(playerId: string) {
-    this.send({ type: 'KICK_PLAYER', playerId });
-  }
-
-  public startGame() {
-    this.send({ type: 'START_GAME' });
-  }
-
-  public rollOpeningRoll() {
-    this.send({ type: 'OPENING_ROLL_ACTION' });
-  }
-
-  public rollDice() {
-    this.send({ type: 'ROLL_DICE' });
-  }
-
-  public buyProperty(tileId: number) {
-    this.send({ type: 'BUY_PROPERTY', tileId });
-  }
-
-  public declineProperty(tileId: number) {
-    this.send({ type: 'DECLINE_PROPERTY', tileId });
-  }
-
-  public upgradeProperty(tileId: number) {
-    this.send({ type: 'UPGRADE_PROPERTY', tileId });
-  }
-
-  public mortgageProperty(tileId: number) {
-    this.send({ type: 'MORTGAGE_PROPERTY', tileId });
-  }
-
-  public unmortgageProperty(tileId: number) {
-    this.send({ type: 'UNMORTGAGE_PROPERTY', tileId });
-  }
-
-  public drawCard() {
-    this.send({ type: 'DRAW_CARD' });
-  }
-
-  public placeBid(amount: number) {
-    this.send({ type: 'PLACE_BID', amount });
-  }
-
-  public passAuction() {
-    this.send({ type: 'PASS_AUCTION' });
-  }
-
-  public proposeTrade(offer: TradeOffer) {
-    this.send({ type: 'PROPOSE_TRADE', offer });
-  }
-
-  public acceptTrade(tradeId: string) {
-    this.send({ type: 'ACCEPT_TRADE', tradeId });
-  }
-
-  public declineTrade(tradeId: string) {
-    this.send({ type: 'DECLINE_TRADE', tradeId });
-  }
-
-  public cancelTrade(tradeId: string) {
-    this.send({ type: 'CANCEL_TRADE', tradeId });
-  }
-
-  public endTurn() {
-    this.send({ type: 'END_TURN' });
-  }
-
-  public sendChat(text: string) {
-    this.send({ type: 'SEND_CHAT', text });
-  }
-
-  public sendEmote(emoji: string) {
-    this.send({ type: 'SEND_EMOTE', emoji });
-  }
+  public createRoom(playerName: string, character: CharacterId) { this.send({ type: 'CREATE_ROOM', playerName, character }); }
+  public joinRoom(roomCode: string, playerName: string, character?: CharacterId) { this.send({ type: 'JOIN_ROOM', roomCode, playerName, character }); }
+  public setReady(ready: boolean) { this.send({ type: 'SET_READY', ready }); }
+  public changeCharacter(character: CharacterId) { this.send({ type: 'CHANGE_CHARACTER', character }); }
+  public updateSettings(settings: Partial<GameSettings>) { this.send({ type: 'UPDATE_SETTINGS', settings }); }
+  public kickPlayer(playerId: string) { this.send({ type: 'KICK_PLAYER', playerId }); }
+  public startGame() { this.send({ type: 'START_GAME' }); }
+  public rollOpeningRoll() { this.send({ type: 'OPENING_ROLL_ACTION' }); }
+  public rollDice() { this.send({ type: 'ROLL_DICE' }); }
+  public buyProperty(tileId: number) { this.send({ type: 'BUY_PROPERTY', tileId }); }
+  public declineProperty(tileId: number) { this.send({ type: 'DECLINE_PROPERTY', tileId }); }
+  public upgradeProperty(tileId: number) { this.send({ type: 'UPGRADE_PROPERTY', tileId }); }
+  public mortgageProperty(tileId: number) { this.send({ type: 'MORTGAGE_PROPERTY', tileId }); }
+  public unmortgageProperty(tileId: number) { this.send({ type: 'UNMORTGAGE_PROPERTY', tileId }); }
+  public drawCard() { this.send({ type: 'DRAW_CARD' }); }
+  public placeBid(amount: number) { this.send({ type: 'PLACE_BID', amount }); }
+  public passAuction() { this.send({ type: 'PASS_AUCTION' }); }
+  public proposeTrade(offer: TradeOffer) { this.send({ type: 'PROPOSE_TRADE', offer }); }
+  public acceptTrade(tradeId: string) { this.send({ type: 'ACCEPT_TRADE', tradeId }); }
+  public declineTrade(tradeId: string) { this.send({ type: 'DECLINE_TRADE', tradeId }); }
+  public cancelTrade(tradeId: string) { this.send({ type: 'CANCEL_TRADE', tradeId }); }
+  public endTurn() { this.send({ type: 'END_TURN' }); }
+  public sendChat(text: string) { this.send({ type: 'SEND_CHAT', text }); }
+  public sendEmote(emoji: string) { this.send({ type: 'SEND_EMOTE', emoji }); }
 
   public leaveRoom() {
     this.send({ type: 'LEAVE_ROOM' });
@@ -320,22 +187,16 @@ export class MultiplayerClient {
     this.cleanupVoice();
   }
 
-  // ========================================================
-  // WEBRTC VOICE CHAT SIGNALING
-  // ========================================================
   public async enableVoice(): Promise<boolean> {
     try {
       if (!this.localStream) {
-        this.localStream = await navigator.mediaDevices.getUserMedia({
-          audio: { echoCancellation: true, noiseSuppression: true },
-          video: false,
-        });
+        this.localStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true }, video: false });
       }
       this.isVoiceActive = true;
       this.isVoiceMuted = false;
       return true;
-    } catch (err) {
-      console.warn('Microphone permission declined or unavailable', err);
+    } catch (error) {
+      console.warn('Microphone permission declined or unavailable', error);
       return false;
     }
   }
@@ -343,9 +204,7 @@ export class MultiplayerClient {
   public toggleMuteVoice(): boolean {
     if (!this.localStream) return true;
     this.isVoiceMuted = !this.isVoiceMuted;
-    this.localStream.getAudioTracks().forEach((track) => {
-      track.enabled = !this.isVoiceMuted;
-    });
+    this.localStream.getAudioTracks().forEach((track) => { track.enabled = !this.isVoiceMuted; });
     return this.isVoiceMuted;
   }
 
@@ -354,19 +213,16 @@ export class MultiplayerClient {
     this.isVoiceActive = false;
   }
 
-  private handleVoiceSignal(fromPlayerId: string, signal: any) {
-    // Handle incoming SDP / ICE candidates for peer connection
+  private handleVoiceSignal(fromPlayerId: string, signal: WebRTCSignal) {
     if (signal.candidate && this.peerConnections.has(fromPlayerId)) {
-      this.peerConnections.get(fromPlayerId)?.addIceCandidate(new RTCIceCandidate(signal.candidate));
+      void this.peerConnections.get(fromPlayerId)?.addIceCandidate(new RTCIceCandidate(signal.candidate));
     }
   }
 
   private cleanupVoice() {
-    if (this.localStream) {
-      this.localStream.getTracks().forEach((t) => t.stop());
-      this.localStream = null;
-    }
-    this.peerConnections.forEach((pc) => pc.close());
+    this.localStream?.getTracks().forEach((track) => track.stop());
+    this.localStream = null;
+    this.peerConnections.forEach((connection) => connection.close());
     this.peerConnections.clear();
   }
 }
