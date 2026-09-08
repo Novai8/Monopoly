@@ -29,6 +29,7 @@ import {
   findAIPropertyToMortgage,
   shouldAIBuyProperty,
   shouldAIBidOnAuction,
+  calculateAuctionMaximumBid,
 } from './utils/aiLogic';
 import { audio } from './utils/audio';
 import { GameEngine } from './engine/gameEngine';
@@ -141,6 +142,7 @@ export default function App() {
   const [mpError, setMpError] = useState<string | null>(null);
   const mpClient = useRef(MultiplayerClient.getInstance());
   const auctionCompletionRef = useRef(false);
+  const auctionMaximumBidsRef = useRef<Map<string, number>>(new Map());
   const activePlayer = players[activePlayerIndex] || players[0];
 
   const addLog = useCallback((text: string, type: GameLogEntry['type'] = 'info') => {
@@ -283,6 +285,14 @@ export default function App() {
       highestBidderId: null, currentBidderId: bidders[nextIndex] ?? null, currentBidderIndex: nextIndex,
       timeLeft: 20, bidders, passedPlayerIds: [], history: [],
     };
+    auctionMaximumBidsRef.current = new Map(
+      bidders
+        .map((id) => {
+          const bidder = players.find((player) => player.id === id);
+          return bidder?.isBot ? [id, calculateAuctionMaximumBid(bidder, tile, boardTiles, ownership, players)] as const : null;
+        })
+        .filter((entry): entry is readonly [string, number] => entry !== null)
+    );
     auctionCompletionRef.current = false; setAuction(state); setCanBuyProperty(false); setGamePhase('auction'); addLog(`${activePlayer.name} declined ${tile.name}; auction started.`, 'auction');
   }, [activePlayer, boardTiles, gameSessionType, players, settings.auctionsEnabled, addLog]);
 
@@ -299,6 +309,7 @@ export default function App() {
         addLog(`${bidder.name} won ${tile.name} for $${state.currentBid}.`, 'auction'); audio.play('auction-win');
       }
     } else if (tile) addLog(`Auction for ${tile.name} closed with no qualifying bid.`, 'auction');
+    auctionMaximumBidsRef.current.clear();
     setAuction({ ...state, active: false });
   }, [boardTiles, players, addLog]);
 
@@ -307,6 +318,10 @@ export default function App() {
     if (gameSessionType === 'multiplayer') { mpClient.current.placeBid(amount); return; }
     if (auction.currentBidderId !== activePlayer.id || auction.passedPlayerIds.includes(activePlayer.id)) return;
     if (amount <= auction.currentBid || amount > activePlayer.balance) return;
+    if (activePlayer.isBot) {
+      const maximumBid = auctionMaximumBidsRef.current.get(activePlayer.id) ?? 0;
+      if (amount > maximumBid) return;
+    }
     const bidderIndex = auction.bidders.indexOf(activePlayer.id);
     const next = nextEligibleAuctionIndex({ ...auction, highestBidderId: activePlayer.id }, players, bidderIndex);
     setAuction({ ...auction, currentBid: amount, highestBidderId: activePlayer.id, currentBidderIndex: next ?? bidderIndex, currentBidderId: next === null ? null : auction.bidders[next], timeLeft: 15, history: [...auction.history, { playerId: activePlayer.id, amount, time: new Date().toISOString() }] });
@@ -324,7 +339,7 @@ export default function App() {
     const bidderIndex = auction.bidders.indexOf(activePlayer.id);
     const next = nextEligibleAuctionIndex({ ...auction, passedPlayerIds: passed }, players, bidderIndex);
     if (next === null) completeAuction({ ...auction, passedPlayerIds: passed });
-    else setAuction({ ...auction, passedPlayerIds: passed, currentBidderIndex: next, currentBidderId: auction.bidders[next], timeLeft: 15 });
+    else setAuction({ ...auction, passedPlayerIds: passed, currentBidderIndex: next, currentBidderId: auction.bidders[next], timeLeft: 15, turnId: (auction.turnId ?? 0) + 1 });
   }, [activePlayer, auction, completeAuction, gameSessionType, players]);
 
   const auctionEnded = useCallback((_winnerId: string | null, _winningBid: number) => {
@@ -428,12 +443,12 @@ export default function App() {
       if (!auction.active || auction.currentBidderId !== bidder.id) return;
       const tile = boardTiles[auction.tileId];
       if (!tile) return;
-      const decision = shouldAIBidOnAuction(bidder, tile, auction.currentBid, boardTiles, ownership, players);
+      const maximumBid = auctionMaximumBidsRef.current.get(bidder.id) ?? calculateAuctionMaximumBid(bidder, tile, boardTiles, ownership, players);
       const amount = auction.currentBid + 10;
-      if (decision.shouldBid && amount <= decision.maxBid && bidder.balance >= amount) {
+      if (amount <= maximumBid && bidder.balance >= amount) {
         const bidderIndex = auction.bidders.indexOf(bidder.id);
         const next = nextEligibleAuctionIndex({ ...auction, highestBidderId: bidder.id, currentBid: amount }, players, bidderIndex);
-        setAuction({ ...auction, currentBid: amount, highestBidderId: bidder.id, currentBidderId: next === null ? null : auction.bidders[next], currentBidderIndex: next ?? bidderIndex, timeLeft: 15, history: [...auction.history, { playerId: bidder.id, amount, time: new Date().toISOString() }] });
+        setAuction({ ...auction, currentBid: amount, highestBidderId: bidder.id, currentBidderId: next === null ? null : auction.bidders[next], currentBidderIndex: next ?? bidderIndex, timeLeft: 15, history: [...auction.history, { playerId: bidder.id, amount, time: new Date().toISOString() }], turnId: (auction.turnId ?? 0) + 1 });
       } else {
         const passed = auction.passedPlayerIds.includes(bidder.id) ? auction.passedPlayerIds : [...auction.passedPlayerIds, bidder.id];
         const remaining = auction.bidders.filter((id) => !passed.includes(id) && !players.find((player) => player.id === id)?.bankrupt);
@@ -441,7 +456,7 @@ export default function App() {
         else {
           const next = nextEligibleAuctionIndex({ ...auction, passedPlayerIds: passed }, players, auction.bidders.indexOf(bidder.id));
           if (next === null) completeAuction({ ...auction, passedPlayerIds: passed });
-          else setAuction({ ...auction, passedPlayerIds: passed, currentBidderId: auction.bidders[next], currentBidderIndex: next, timeLeft: 15 });
+          else setAuction({ ...auction, passedPlayerIds: passed, currentBidderId: auction.bidders[next], currentBidderIndex: next, timeLeft: 15, turnId: (auction.turnId ?? 0) + 1 });
         }
       }
     }, 800);

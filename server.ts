@@ -21,9 +21,9 @@ import {
 import { generateClassicBoard } from './src/data/classicBoard';
 import { initializeOwnership } from './src/utils/gameHelpers';
 import { GameEngine } from './src/engine/gameEngine';
-import { shouldAIBuyProperty, shouldAIBidOnAuction, findAIPropertiesToBuild } from './src/utils/aiLogic';
+import { shouldAIBuyProperty, shouldAIBidOnAuction, calculateAuctionMaximumBid, findAIPropertiesToBuild } from './src/utils/aiLogic';
 
-const PORT = 3000;
+const PORT = Number(process.env.PORT || 3000);
 const app = express();
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
@@ -49,6 +49,7 @@ const socketToPlayer = new Map<WebSocket, { playerId: string; roomCode: string }
 const sessions = new Map<string, { playerId: string; roomCode: string; lastSeen: number }>();
 const roomBoardTiles = new Map<string, BoardTile[]>(); // roomCode -> BoardTile[]
 const botActionLocks = new Map<string, number>();
+const auctionBotMaximums = new Map<string, Map<string, number>>();
 
 // Generate unique 5-letter uppercase room codes (e.g. AB7KQ)
 function generateRoomCode(): string {
@@ -204,9 +205,9 @@ function getBotAction(room: MultiplayerRoom): { botId: string; action: ClientAct
     const tiles = roomBoardTiles.get(room.code) || [];
     const tile = tiles.find((candidate) => candidate.id === gs.auction?.tileId);
     if (!tile) return null;
-    const decision = shouldAIBidOnAuction(bot, tile, gs.auction.currentBid, tiles, gs.ownership, gs.players);
+    const maximumBid = auctionBotMaximums.get(room.code)?.get(bot.id) ?? calculateAuctionMaximumBid(bot, tile, tiles, gs.ownership, gs.players);
     const nextBid = gs.auction.currentBid + 10;
-    return decision.shouldBid && nextBid <= decision.maxBid ? { botId: bot.id, action: { type: 'PLACE_BID', amount: nextBid } } : { botId: bot.id, action: { type: 'PASS_AUCTION' } };
+    return nextBid <= maximumBid && bot.balance >= nextBid ? { botId: bot.id, action: { type: 'PLACE_BID', amount: nextBid } } : { botId: bot.id, action: { type: 'PASS_AUCTION' } };
   }
   const bot = gs.players[gs.activePlayerIndex];
   if (!bot?.isBot || bot.bankrupt) return null;
@@ -234,10 +235,15 @@ function scheduleBotActions() {
     const lockKey = `${room.code}:${decision.botId}:${room.gameState?.gamePhase}:${auctionTurnId}:${room.gameState?.activePlayerIndex}`;
     if (botActionLocks.has(lockKey)) return;
     botActionLocks.set(lockKey, Date.now());
+    const scheduledTurnId = room.gameState?.auction?.turnId ?? 0;
+    const scheduledBidderId = room.gameState?.auction?.currentBidderId ?? null;
     setTimeout(() => {
       botActionLocks.delete(lockKey);
       const currentRoom = rooms.get(room.code);
       if (!currentRoom || currentRoom.status !== 'playing' || !currentRoom.gameState) return;
+      const currentAuction = currentRoom.gameState.auction;
+      if (currentAuction?.active && room.gameState?.gamePhase === 'auction' && (currentAuction.turnId ?? 0) !== scheduledTurnId) return;
+      if (currentAuction?.active && currentAuction.currentBidderId !== scheduledBidderId) return;
       const currentBot = currentRoom.gameState.players.find((player) => player.id === decision.botId);
       if (!currentBot?.isBot || currentBot.bankrupt) return;
       handleClientAction(null, decision.action, decision.botId);
@@ -260,6 +266,7 @@ function advanceAuction(room: MultiplayerRoom, actorId: string, action: 'bid' | 
   if (!gs || !auction?.active) return;
   const eligible = getAuctionEligibleIds(gs, auction);
   if (eligible.length === 0) {
+    auctionBotMaximums.delete(room.code);
     auction.active = false; gs.auction = null; gs.gamePhase = 'turn-end';
     broadcastToRoom(room.code, { type: 'STATE_UPDATE', gameState: gs }); return;
   }
@@ -278,10 +285,11 @@ function advanceAuction(room: MultiplayerRoom, actorId: string, action: 'bid' | 
       gs.ownership[auction.tileId] = { ownerId: winner.id, houses: 0, isMortgaged: false };
       gs.logs.unshift({ id: generateId(), text: `${winner.name} won ${tile.name} for $${auction.currentBid}.`, type: 'auction', timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) });
     }
+    auctionBotMaximums.delete(room.code);
     auction.active = false; gs.auction = null; gs.gamePhase = 'turn-end';
     broadcastToRoom(room.code, { type: 'STATE_UPDATE', gameState: gs }); return;
   }
-  if (nextIndex === null) { auction.active = false; gs.auction = null; gs.gamePhase = 'turn-end'; broadcastToRoom(room.code, { type: 'STATE_UPDATE', gameState: gs }); return; }
+  if (nextIndex === null) { auctionBotMaximums.delete(room.code); auction.active = false; gs.auction = null; gs.gamePhase = 'turn-end'; broadcastToRoom(room.code, { type: 'STATE_UPDATE', gameState: gs }); return; }
   auction.currentBidderIndex = nextIndex;
   auction.currentBidderId = auction.bidders[nextIndex];
   auction.turnId = (auction.turnId ?? 0) + 1;
@@ -870,6 +878,12 @@ function handleClientAction(ws: WebSocket | null, action: ClientAction, actorId?
         const startFrom = bidders.indexOf(player.id);
         const firstIndex = bidders.length > 1 ? (startFrom + 1) % bidders.length : 0;
         gs.auction = { active: true, tileId: tile.id, currentBid: Math.max(10, Math.round((tile.cost || 100) * 0.5)), highestBidderId: null, currentBidderId: bidders[firstIndex] || null, currentBidderIndex: firstIndex, timeLeft: 20, bidders, passedPlayerIds: [], history: [], turnId: 1 };
+        auctionBotMaximums.set(room.code, new Map(
+          bidders.map((id) => {
+            const bidder = gs.players.find((candidate) => candidate.id === id);
+            return bidder?.isBot ? [id, calculateAuctionMaximumBid(bidder, tile, roomBoardTiles.get(room.code) || [], gs.ownership, gs.players)] : null;
+          }).filter((entry): entry is [string, number] => entry !== null)
+        ));
         gs.canBuyProperty = false; gs.gamePhase = 'auction';
         gs.logs.unshift({ id: generateId(), text: `${player.name} passed on ${tile.name}. Auction opened at $${gs.auction.currentBid}.`, type: 'auction', timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) });
       } else { gs.canBuyProperty = false; gs.gamePhase = gs.doublesCount > 0 ? 'ready-to-roll' : 'turn-end'; }
@@ -1006,6 +1020,15 @@ function handleClientAction(ws: WebSocket | null, action: ClientAction, actorId?
       const bidAmount = Math.round(Number(action.amount));
       if (!Number.isFinite(bidAmount) || bidAmount <= auction.currentBid) { sendToClient(ws, { type: 'ERROR', message: 'Bid must exceed the current bid.' }); return; }
       if (player.balance < bidAmount) { sendToClient(ws, { type: 'ERROR', message: 'Insufficient balance to place this bid.' }); return; }
+      if (player.isBot) {
+        const tile = (roomBoardTiles.get(room.code) || []).find((candidate) => candidate.id === auction.tileId);
+        const maximumBid = auctionBotMaximums.get(room.code)?.get(player.id) ?? (tile ? calculateAuctionMaximumBid(player, tile, roomBoardTiles.get(room.code) || [], gs.ownership, gs.players) : 0);
+        if (bidAmount > maximumBid) {
+          if (!auction.passedPlayerIds.includes(player.id)) auction.passedPlayerIds.push(player.id);
+          advanceAuction(room, player.id, 'pass');
+          return;
+        }
+      }
       auction.currentBid = bidAmount; auction.highestBidderId = player.id;
       auction.history.push({ playerId: player.id, amount: bidAmount, time: new Date().toISOString() });
       gs.logs.unshift({ id: generateId(), text: `${player.name} raised the auction to $${bidAmount}.`, type: 'auction', timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) });
