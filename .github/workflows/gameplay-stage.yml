@@ -73,13 +73,22 @@ jobs:
           send({type:'START_GAME'});
           await waitFor(m=>m.type==='GAME_STARTED',5000);
           const originalCount=messages.length;
-          let sawBotTurn=false, sawBotProgress=false;
+          let sawBotTurn=false, sawBotProgress=false, passedHumanTurn=false;
           const end=Date.now()+25000;
           while(Date.now()<end){
-            for(const m of messages.slice(originalCount)){ if(m.type!=='STATE_UPDATE') continue; const bp=m.gameState.players.find(p=>p.id===bot.id); if(m.gameState.players[m.gameState.activePlayerIndex]?.id===bot.id) sawBotTurn=true; if(bp && (bp.position!==0 || bp.balance!==1500 || bp.bankrupt)) sawBotProgress=true; }
+            for(const m of messages.slice(originalCount)){
+              if(m.type!=='STATE_UPDATE') continue;
+              const gs=m.gameState;
+              const current=gs.players[gs.activePlayerIndex];
+              const bp=gs.players.find(p=>p.id===bot.id);
+              if(current?.id===bot.id) sawBotTurn=true;
+              if(bp && (bp.position!==0 || bp.balance!==1500 || bp.bankrupt)) sawBotProgress=true;
+              if(!passedHumanTurn && current?.id !== bot.id && current?.id === lobby.room.players.find(p=>!p.isBot)?.id && gs.gamePhase==='ready-to-roll') { send({type:'END_TURN'}); passedHumanTurn=true; }
+            }
             if(sawBotTurn && sawBotProgress) break;
             await new Promise(r=>setTimeout(r,250));
           }
+          if(!passedHumanTurn && !sawBotTurn) throw new Error('test never reached a playable turn');
           if(!sawBotTurn || !sawBotProgress) throw new Error('bot scheduler did not execute a real authoritative turn');
           ws.close(); server.kill('SIGTERM');
           console.log('Multiplayer bot integration test passed');
