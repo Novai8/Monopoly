@@ -20,5 +20,7 @@ jobs:
         run: npm install
       - name: Type check
         run: npm run lint
+      - name: Server type check
+        run: npx tsc --noEmit --skipLibCheck --module ESNext --moduleResolution bundler --target ES2020 server.ts
       - name: Production build
         run: npm run build
