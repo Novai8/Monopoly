@@ -17,16 +17,25 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - name: Apply targeted source fixes
+      - name: Apply final server correction
         if: github.event_name == 'pull_request'
-        shell: bash
         run: |
           python3 - <<'PY'
           from pathlib import Path
           p=Path('server.ts'); s=p.read_text()
-          s=s.replace("case 'ready-to-roll': { const buildId = findAIPropertiesToBuild(bot, tiles, gs.ownership);", "case 'ready-to-roll': { const tiles = roomBoardTiles.get(room.code) || []; const buildId = findAIPropertiesToBuild(bot, tiles, gs.ownership);")
-          p.write_text(s)
+          old="case 'ready-to-roll': { const buildId = findAIPropertiesToBuild(bot, tiles, gs.ownership);"
+          new="case 'ready-to-roll': { const tiles = roomBoardTiles.get(room.code) || []; const buildId = findAIPropertiesToBuild(bot, tiles, gs.ownership);"
+          assert old in s
+          p.write_text(s.replace(old,new))
           PY
+      - name: Publish source correction
+        if: github.event_name == 'pull_request'
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add server.ts
+          git commit -m "fix: scope bot build tile lookup correctly"
+          git push --force origin HEAD:${{ github.head_ref }}
       - name: Install dependencies
         run: npm install
       - name: Lint
