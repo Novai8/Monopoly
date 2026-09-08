@@ -21,6 +21,7 @@ import {
 import { generateClassicBoard } from './src/data/classicBoard';
 import { initializeOwnership } from './src/utils/gameHelpers';
 import { GameEngine } from './src/engine/gameEngine';
+import { shouldAIBuyProperty } from './src/utils/aiLogic';
 
 const PORT = 3000;
 const app = express();
@@ -47,6 +48,7 @@ const clientSockets = new Map<string, WebSocket>(); // playerId -> WebSocket
 const socketToPlayer = new Map<WebSocket, { playerId: string; roomCode: string }>();
 const sessions = new Map<string, { playerId: string; roomCode: string; lastSeen: number }>();
 const roomBoardTiles = new Map<string, BoardTile[]>(); // roomCode -> BoardTile[]
+const botActionLocks = new Set<string>();
 
 // Generate unique 5-letter uppercase room codes (e.g. AB7KQ)
 function generateRoomCode(): string {
@@ -81,8 +83,8 @@ function broadcastToRoom(roomCode: string, msg: ServerMessage, excludeSocket?: W
 }
 
 // Send message to single client
-function sendToClient(ws: WebSocket, msg: ServerMessage) {
-  if (ws.readyState === WebSocket.OPEN) {
+function sendToClient(ws: WebSocket | null | undefined, msg: ServerMessage) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(msg));
   }
 }
@@ -179,6 +181,71 @@ function advanceToNextTurn(room: MultiplayerRoom) {
 
 
 
+function getActionBinding(ws: WebSocket | null, actorId?: string): { playerId: string; roomCode: string } | undefined {
+  if (actorId) {
+    for (const room of rooms.values()) {
+      if (room.players.some((player) => player.id === actorId && player.isBot)) return { playerId: actorId, roomCode: room.code };
+    }
+    return undefined;
+  }
+  return ws ? socketToPlayer.get(ws) : undefined;
+}
+
+function getBotAction(room: MultiplayerRoom): { botId: string; action: ClientAction } | null {
+  const gs = room.gameState;
+  if (!gs || room.status !== 'playing') return null;
+  if (gs.gamePhase === 'opening-roll') {
+    const bot = gs.players.find((player) => player.isBot && !player.bankrupt);
+    return bot ? { botId: bot.id, action: { type: 'OPENING_ROLL_ACTION' } } : null;
+  }
+  if (gs.gamePhase === 'auction' && gs.auction?.active && gs.auction.currentBidderId) {
+    const bot = gs.players.find((player) => player.id === gs.auction?.currentBidderId && player.isBot && !player.bankrupt);
+    if (!bot) return null;
+    const tiles = roomBoardTiles.get(room.code) || [];
+    const tile = tiles.find((candidate) => candidate.id === gs.auction?.tileId);
+    if (!tile) return null;
+    const wantsProperty = shouldAIBuyProperty(bot, tile, tiles, gs.ownership);
+    const nextBid = gs.auction.currentBid + 10;
+    return wantsProperty && bot.balance >= nextBid ? { botId: bot.id, action: { type: 'PLACE_BID', amount: nextBid } } : { botId: bot.id, action: { type: 'PASS_AUCTION' } };
+  }
+  const bot = gs.players[gs.activePlayerIndex];
+  if (!bot?.isBot || bot.bankrupt) return null;
+  switch (gs.gamePhase) {
+    case 'ready-to-roll': return { botId: bot.id, action: { type: 'ROLL_DICE' } };
+    case 'action-required': {
+      if (gs.canBuyProperty) {
+        const tiles = roomBoardTiles.get(room.code) || [];
+        const tile = tiles.find((candidate) => candidate.id === bot.position);
+        return tile && shouldAIBuyProperty(bot, tile, tiles, gs.ownership) ? { botId: bot.id, action: { type: 'BUY_PROPERTY', tileId: tile.id } } : { botId: bot.id, action: { type: 'DECLINE_PROPERTY', tileId: bot.position } };
+      }
+      return { botId: bot.id, action: { type: 'END_TURN' } };
+    }
+    case 'card-choice': return gs.drawnCard ? { botId: bot.id, action: { type: 'DRAW_CARD' } } : { botId: bot.id, action: { type: 'END_TURN' } };
+    case 'turn-end': return { botId: bot.id, action: { type: 'END_TURN' } };
+    default: return null;
+  }
+}
+
+function scheduleBotActions() {
+  rooms.forEach((room) => {
+    const decision = getBotAction(room);
+    if (!decision) return;
+    const lockKey = `${room.code}:${decision.botId}:${room.gameState?.gamePhase}:${room.gameState?.auction?.currentBidderId || ''}`;
+    if (botActionLocks.has(lockKey)) return;
+    botActionLocks.add(lockKey);
+    setTimeout(() => {
+      botActionLocks.delete(lockKey);
+      const currentRoom = rooms.get(room.code);
+      if (!currentRoom || currentRoom.status !== 'playing' || !currentRoom.gameState) return;
+      const currentBot = currentRoom.gameState.players.find((player) => player.id === decision.botId);
+      if (!currentBot?.isBot || currentBot.bankrupt) return;
+      handleClientAction(null, decision.action, decision.botId);
+    }, 500);
+  });
+}
+
+setInterval(scheduleBotActions, 250);
+
 function getAuctionEligibleIds(gs: ServerGameState, auction: AuctionState): string[] {
   return auction.bidders.filter((id) => {
     const player = gs.players.find((candidate) => candidate.id === id);
@@ -220,6 +287,29 @@ function advanceAuction(room: MultiplayerRoom, actorId: string, action: 'bid' | 
   broadcastToRoom(room.code, { type: 'STATE_UPDATE', gameState: gs });
 }
 
+function resolveLandingOutcome(room: MultiplayerRoom, playerId: string, diceTotal: number, allowExtraRoll: boolean): void {
+  const gs = room.gameState;
+  const tiles = roomBoardTiles.get(room.code) || [];
+  if (!gs) return;
+  const player = gs.players.find((candidate) => candidate.id === playerId);
+  const tile = player ? tiles[player.position] : undefined;
+  if (!player || !tile) return;
+  const landing = GameEngine.resolveLanding(player, tile, tiles, gs.ownership, gs.players, room.settings, diceTotal);
+  gs.rollSummary = `${player.name} -> ${tile.name}`;
+  gs.logs.unshift({ id: generateId(), text: landing.description, type: landing.type === 'rent' ? 'rent' : landing.type === 'tax' ? 'money' : landing.type === 'card' ? 'card' : 'roll', timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) });
+  if (landing.type === 'unowned') { gs.gamePhase = 'action-required'; gs.canBuyProperty = true; }
+  else if (landing.type === 'rent' && landing.recipientId && landing.amount) {
+    const owner = gs.players.find((candidate) => candidate.id === landing.recipientId);
+    if (player.balance >= landing.amount) { player.balance -= landing.amount; if (owner) owner.balance += landing.amount; gs.gamePhase = allowExtraRoll ? 'ready-to-roll' : 'turn-end'; }
+    else { const bankruptcy = GameEngine.handleBankruptcy(player, owner?.id || null, gs.players, gs.ownership); gs.players = bankruptcy.updatedPlayers; gs.ownership = bankruptcy.updatedOwnership; gs.winner = bankruptcy.winner; gs.logs.unshift({ id: generateId(), text: bankruptcy.message, type: 'bankruptcy', timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }); gs.gamePhase = bankruptcy.winner ? 'game-over' : 'turn-end'; }
+  } else if (landing.type === 'tax' && landing.amount) {
+    if (player.balance >= landing.amount) { player.balance -= landing.amount; gs.gamePhase = allowExtraRoll ? 'ready-to-roll' : 'turn-end'; }
+    else { const bankruptcy = GameEngine.handleBankruptcy(player, null, gs.players, gs.ownership); gs.players = bankruptcy.updatedPlayers; gs.ownership = bankruptcy.updatedOwnership; gs.winner = bankruptcy.winner; gs.gamePhase = bankruptcy.winner ? 'game-over' : 'turn-end'; }
+  } else if (landing.type === 'card' && landing.card) { gs.drawnCard = landing.card; gs.gamePhase = 'card-choice'; }
+  else if (landing.type === 'detention') { player.inDetention = true; player.detentionTurns = 0; const jail = tiles.find((candidate) => candidate.type === 'detention'); if (jail) player.position = jail.id; gs.gamePhase = 'turn-end'; }
+  else gs.gamePhase = allowExtraRoll ? 'ready-to-roll' : 'turn-end';
+}
+
 // ========================================================
 // WEBSOCKET CONNECTION & MESSAGE ROUTING
 // ========================================================
@@ -238,7 +328,7 @@ wss.on('connection', (ws: WebSocket) => {
   });
 });
 
-function handleClientAction(ws: WebSocket, action: ClientAction) {
+function handleClientAction(ws: WebSocket | null, action: ClientAction, actorId?: string) {
   switch (action.type) {
     case 'CREATE_ROOM': {
       const playerName = sanitizePlayerName(action.playerName);
@@ -387,7 +477,7 @@ function handleClientAction(ws: WebSocket, action: ClientAction) {
     }
 
     case 'SET_READY': {
-      const binding = socketToPlayer.get(ws);
+      const binding = getActionBinding(ws, actorId);
       if (!binding) return;
       const room = rooms.get(binding.roomCode);
       if (!room || room.status !== 'lobby') return;
@@ -401,7 +491,7 @@ function handleClientAction(ws: WebSocket, action: ClientAction) {
     }
 
     case 'CHANGE_CHARACTER': {
-      const binding = socketToPlayer.get(ws);
+      const binding = getActionBinding(ws, actorId);
       if (!binding) return;
       const room = rooms.get(binding.roomCode);
       if (!room || room.status !== 'lobby') return;
@@ -415,7 +505,7 @@ function handleClientAction(ws: WebSocket, action: ClientAction) {
     }
 
     case 'UPDATE_SETTINGS': {
-      const binding = socketToPlayer.get(ws);
+      const binding = getActionBinding(ws, actorId);
       if (!binding) return;
       const room = rooms.get(binding.roomCode);
       if (!room || room.status !== 'lobby' || room.hostId !== binding.playerId) return;
@@ -433,7 +523,7 @@ function handleClientAction(ws: WebSocket, action: ClientAction) {
     }
 
     case 'KICK_PLAYER': {
-      const binding = socketToPlayer.get(ws);
+      const binding = getActionBinding(ws, actorId);
       if (!binding) return;
       const room = rooms.get(binding.roomCode);
       if (!room || room.status !== 'lobby' || room.hostId !== binding.playerId) return;
@@ -452,8 +542,38 @@ function handleClientAction(ws: WebSocket, action: ClientAction) {
       break;
     }
 
+    case 'ADD_BOT': {
+      const binding = getActionBinding(ws, actorId);
+      if (!binding) return;
+      const room = rooms.get(binding.roomCode);
+      if (!room || room.status !== 'lobby' || room.hostId !== binding.playerId) return;
+      if (room.players.length >= room.playerLimit) { sendToClient(ws, { type: 'ERROR', message: 'This room is full.' }); return; }
+      const botNames = ['Barnaby Bot', 'Cleo Bot', 'Darius Bot', 'Eliza Bot', 'Finley Bot', 'Gideon Bot', 'Hattie Bot', 'Ignatius Bot', 'Jules Bot'];
+      const botCharacters: CharacterId[] = ['duck', 'cat', 'penguin', 'frog', 'pizza', 'coffee', 'robot', 'dino', 'car', 'rocket', 'chest', 'mushroom', 'balloon', 'crown'];
+      const botIndex = room.players.filter((player) => player.isBot).length;
+      const colors = ['#ef4444', '#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16', '#f97316', '#6366f1'];
+      const usedColors = room.players.map((player) => player.color);
+      const color = colors.find((candidate) => !usedColors.includes(candidate)) || '#64748b';
+      const requestedName = sanitizePlayerName(action.name || botNames[botIndex % botNames.length]);
+      const uniqueName = room.players.some((player) => player.name.toLowerCase() === requestedName.toLowerCase()) ? `${requestedName} ${botIndex + 1}` : requestedName;
+      const bot: Player = { id: `bot-${generateId()}`, name: uniqueName, isAI: true, isBot: true, color, character: botCharacters[botIndex % botCharacters.length], balance: room.settings.startingMoney || 1500, position: 0, inDetention: false, detentionTurns: 0, detentionPasses: 0, bankrupt: false, voiceState: 'quiet', isHost: false, ready: true, difficulty: action.difficulty || room.settings.botDifficulty || 'normal' };
+      room.players.push(bot);
+      broadcastToRoom(room.code, { type: 'ROOM_UPDATED', room });
+      break;
+    }
+
+    case 'REMOVE_BOT': {
+      const binding = getActionBinding(ws, actorId);
+      if (!binding) return;
+      const room = rooms.get(binding.roomCode);
+      if (!room || room.status !== 'lobby' || room.hostId !== binding.playerId) return;
+      const botIndex = room.players.findIndex((player) => player.id === action.botId && player.isBot);
+      if (botIndex >= 0) { room.players.splice(botIndex, 1); broadcastToRoom(room.code, { type: 'ROOM_UPDATED', room }); }
+      break;
+    }
+
     case 'START_GAME': {
-      const binding = socketToPlayer.get(ws);
+      const binding = getActionBinding(ws, actorId);
       if (!binding) return;
       const room = rooms.get(binding.roomCode);
       if (!room || room.status !== 'lobby' || room.hostId !== binding.playerId) return;
@@ -540,7 +660,7 @@ function handleClientAction(ws: WebSocket, action: ClientAction) {
     }
 
     case 'OPENING_ROLL_ACTION': {
-      const binding = socketToPlayer.get(ws);
+      const binding = getActionBinding(ws, actorId);
       if (!binding) return;
       const room = rooms.get(binding.roomCode);
       if (!room || !room.gameState || room.gameState.gamePhase !== 'opening-roll') return;
@@ -573,7 +693,7 @@ function handleClientAction(ws: WebSocket, action: ClientAction) {
     }
 
     case 'ROLL_DICE': {
-      const binding = socketToPlayer.get(ws);
+      const binding = getActionBinding(ws, actorId);
       if (!binding) return;
       const room = rooms.get(binding.roomCode);
       if (!room || !room.gameState || room.gameState.gamePhase !== 'ready-to-roll') return;
@@ -693,74 +813,14 @@ function handleClientAction(ws: WebSocket, action: ClientAction) {
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       });
 
-      // Handle Landing Types
-      if (landing.type === 'unowned') {
-        gs.gamePhase = 'action-required';
-        gs.canBuyProperty = true;
-      } else if (landing.type === 'rent' && landing.recipientId && landing.amount) {
-        const owner = gs.players.find((p) => p.id === landing.recipientId);
-        const rentAmount = landing.amount;
-        if (activePlayer.balance >= rentAmount) {
-          activePlayer.balance -= rentAmount;
-          if (owner) owner.balance += rentAmount;
-          gs.gamePhase = isDoubles ? 'ready-to-roll' : 'turn-end';
-        } else {
-          // Insufficient funds: Bankruptcy check
-          const bRes = GameEngine.handleBankruptcy(activePlayer, owner?.id || null, gs.players, gs.ownership);
-          gs.players = bRes.updatedPlayers;
-          gs.ownership = bRes.updatedOwnership;
-          gs.winner = bRes.winner;
-          gs.logs.unshift({
-            id: generateId(),
-            text: bRes.message,
-            type: 'bankruptcy',
-            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          });
-          if (bRes.winner) {
-            gs.gamePhase = 'game-over';
-          } else {
-            advanceToNextTurn(room);
-            return;
-          }
-        }
-      } else if (landing.type === 'tax' && landing.amount) {
-        const taxAmount = landing.amount;
-        if (activePlayer.balance >= taxAmount) {
-          activePlayer.balance -= taxAmount;
-          gs.gamePhase = isDoubles ? 'ready-to-roll' : 'turn-end';
-        } else {
-          // Bankrupt to town
-          const bRes = GameEngine.handleBankruptcy(activePlayer, null, gs.players, gs.ownership);
-          gs.players = bRes.updatedPlayers;
-          gs.ownership = bRes.updatedOwnership;
-          gs.winner = bRes.winner;
-          if (bRes.winner) {
-            gs.gamePhase = 'game-over';
-          } else {
-            advanceToNextTurn(room);
-            return;
-          }
-        }
-      } else if (landing.type === 'card' && landing.card) {
-        gs.gamePhase = 'card-choice';
-        gs.drawnCard = landing.card;
-      } else if (landing.type === 'detention') {
-        activePlayer.inDetention = true;
-        activePlayer.detentionTurns = 0;
-        const detentionTile = tiles.find((t) => t.type === 'detention');
-        if (detentionTile) activePlayer.position = detentionTile.id;
-        gs.gamePhase = 'turn-end';
-      } else {
-        // Safe tile
-        gs.gamePhase = isDoubles ? 'ready-to-roll' : 'turn-end';
-      }
+      resolveLandingOutcome(room, activePlayer.id, sum, isDoubles && !activePlayer.inDetention);
 
       broadcastToRoom(room.code, { type: 'STATE_UPDATE', gameState: gs });
       break;
     }
 
     case 'BUY_PROPERTY': {
-      const binding = socketToPlayer.get(ws);
+      const binding = getActionBinding(ws, actorId);
       if (!binding) return;
       const room = rooms.get(binding.roomCode);
       if (!room || !room.gameState) return;
@@ -793,7 +853,7 @@ function handleClientAction(ws: WebSocket, action: ClientAction) {
     }
 
     case 'DECLINE_PROPERTY': {
-      const binding = socketToPlayer.get(ws);
+      const binding = getActionBinding(ws, actorId);
       if (!binding) return;
       const room = rooms.get(binding.roomCode);
       if (!room?.gameState) return;
@@ -815,7 +875,7 @@ function handleClientAction(ws: WebSocket, action: ClientAction) {
     }
 
     case 'UPGRADE_PROPERTY': {
-      const binding = socketToPlayer.get(ws);
+      const binding = getActionBinding(ws, actorId);
       if (!binding) return;
       const room = rooms.get(binding.roomCode);
       if (!room || !room.gameState) return;
@@ -847,7 +907,7 @@ function handleClientAction(ws: WebSocket, action: ClientAction) {
     }
 
     case 'MORTGAGE_PROPERTY': {
-      const binding = socketToPlayer.get(ws);
+      const binding = getActionBinding(ws, actorId);
       if (!binding) return;
       const room = rooms.get(binding.roomCode);
       if (!room || !room.gameState) return;
@@ -878,7 +938,7 @@ function handleClientAction(ws: WebSocket, action: ClientAction) {
     }
 
     case 'UNMORTGAGE_PROPERTY': {
-      const binding = socketToPlayer.get(ws);
+      const binding = getActionBinding(ws, actorId);
       if (!binding) return;
       const room = rooms.get(binding.roomCode);
       if (!room || !room.gameState) return;
@@ -909,41 +969,29 @@ function handleClientAction(ws: WebSocket, action: ClientAction) {
     }
 
     case 'DRAW_CARD': {
-      const binding = socketToPlayer.get(ws);
+      const binding = getActionBinding(ws, actorId);
       if (!binding) return;
       const room = rooms.get(binding.roomCode);
       if (!room || !room.gameState || room.gameState.gamePhase !== 'card-choice') return;
-
       const gs = room.gameState;
       const player = gs.players[gs.activePlayerIndex];
       if (player.id !== binding.playerId || !gs.drawnCard) return;
-
+      const card = gs.drawnCard;
+      gs.drawnCard = null;
       const tiles = roomBoardTiles.get(room.code) || [];
-      const cardRes = GameEngine.executeCard(
-        gs.drawnCard,
-        player,
-        gs.players,
-        tiles,
-        gs.ownership,
-        tiles.length
-      );
-
+      const cardRes = GameEngine.executeCard(card, player, gs.players, tiles, gs.ownership, tiles.length);
       gs.players = cardRes.updatedAllPlayers;
       gs.ownership = cardRes.updatedOwnership;
-      gs.gamePhase = gs.doublesCount > 0 ? 'ready-to-roll' : 'turn-end';
-      gs.logs.unshift({
-        id: generateId(),
-        text: cardRes.message,
-        type: 'card',
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      });
-
+      gs.logs.unshift({ id: generateId(), text: cardRes.message, type: 'card', timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) });
+      if (card.actionType === 'go-detention') gs.gamePhase = 'turn-end';
+      else if (cardRes.targetPosition !== undefined) resolveLandingOutcome(room, player.id, 0, false);
+      else gs.gamePhase = gs.doublesCount > 0 ? 'ready-to-roll' : 'turn-end';
       broadcastToRoom(room.code, { type: 'STATE_UPDATE', gameState: gs });
       break;
     }
 
     case 'PLACE_BID': {
-      const binding = socketToPlayer.get(ws);
+      const binding = getActionBinding(ws, actorId);
       if (!binding) return;
       const room = rooms.get(binding.roomCode);
       const gs = room?.gameState;
@@ -963,7 +1011,7 @@ function handleClientAction(ws: WebSocket, action: ClientAction) {
     }
 
     case 'PASS_AUCTION': {
-      const binding = socketToPlayer.get(ws);
+      const binding = getActionBinding(ws, actorId);
       if (!binding) return;
       const room = rooms.get(binding.roomCode);
       const gs = room?.gameState;
@@ -978,7 +1026,7 @@ function handleClientAction(ws: WebSocket, action: ClientAction) {
     }
 
     case 'PROPOSE_TRADE': {
-      const binding = socketToPlayer.get(ws);
+      const binding = getActionBinding(ws, actorId);
       if (!binding) return;
       const room = rooms.get(binding.roomCode);
       if (!room || !room.gameState) return;
@@ -1009,7 +1057,7 @@ function handleClientAction(ws: WebSocket, action: ClientAction) {
     }
 
     case 'ACCEPT_TRADE': {
-      const binding = socketToPlayer.get(ws);
+      const binding = getActionBinding(ws, actorId);
       if (!binding) return;
       const room = rooms.get(binding.roomCode);
       if (!room || !room.gameState) return;
@@ -1046,7 +1094,7 @@ function handleClientAction(ws: WebSocket, action: ClientAction) {
     }
 
     case 'DECLINE_TRADE': {
-      const binding = socketToPlayer.get(ws);
+      const binding = getActionBinding(ws, actorId);
       if (!binding) return;
       const room = rooms.get(binding.roomCode);
       if (!room || !room.gameState) return;
@@ -1061,7 +1109,7 @@ function handleClientAction(ws: WebSocket, action: ClientAction) {
     }
 
     case 'CANCEL_TRADE': {
-      const binding = socketToPlayer.get(ws);
+      const binding = getActionBinding(ws, actorId);
       if (!binding) return;
       const room = rooms.get(binding.roomCode);
       if (!room || !room.gameState) return;
@@ -1076,7 +1124,7 @@ function handleClientAction(ws: WebSocket, action: ClientAction) {
     }
 
     case 'END_TURN': {
-      const binding = socketToPlayer.get(ws);
+      const binding = getActionBinding(ws, actorId);
       if (!binding) return;
       const room = rooms.get(binding.roomCode);
       if (!room || !room.gameState) return;
@@ -1090,7 +1138,7 @@ function handleClientAction(ws: WebSocket, action: ClientAction) {
     }
 
     case 'SEND_CHAT': {
-      const binding = socketToPlayer.get(ws);
+      const binding = getActionBinding(ws, actorId);
       if (!binding) return;
       const room = rooms.get(binding.roomCode);
       if (!room) return;
@@ -1115,7 +1163,7 @@ function handleClientAction(ws: WebSocket, action: ClientAction) {
     }
 
     case 'SEND_EMOTE': {
-      const binding = socketToPlayer.get(ws);
+      const binding = getActionBinding(ws, actorId);
       if (!binding) return;
       const room = rooms.get(binding.roomCode);
       if (!room) return;
@@ -1132,7 +1180,7 @@ function handleClientAction(ws: WebSocket, action: ClientAction) {
     }
 
     case 'VOICE_SIGNAL': {
-      const binding = socketToPlayer.get(ws);
+      const binding = getActionBinding(ws, actorId);
       if (!binding) return;
       const targetWs = clientSockets.get(action.targetPlayerId);
       if (targetWs && targetWs.readyState === WebSocket.OPEN) {
