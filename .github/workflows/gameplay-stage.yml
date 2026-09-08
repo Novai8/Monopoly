@@ -52,19 +52,19 @@ jobs:
           EOF
       - name: Multiplayer bot integration test
         run: |
-          cat > /tmp/test-multiplayer.mjs <<'EOF'
+          cat > scripts/tmp-multiplayer-test.mjs <<'EOF'
           import { spawn } from 'node:child_process';
           import WebSocket from 'ws';
           const server = spawn('node', ['--import', 'tsx', 'server.ts'], { env: { ...process.env, NODE_ENV: 'production' }, stdio: ['ignore','pipe','pipe'] });
           await new Promise((resolve, reject) => { const timer=setTimeout(()=>reject(new Error('server start timeout')),8000); server.stdout.on('data',d=>{ if(String(d).includes('Town Tycoon Server listening')){clearTimeout(timer);resolve();}}); server.stderr.on('data',d=>process.stderr.write(d)); });
           const ws = new WebSocket('ws://127.0.0.1:3000');
           const messages=[];
+          ws.on('message',raw=>{ try{messages.push(JSON.parse(String(raw)));}catch{} });
           await new Promise((resolve,reject)=>{ const timer=setTimeout(()=>reject(new Error('ws open timeout')),5000); ws.on('open',()=>{clearTimeout(timer);resolve();}); ws.on('error',reject); });
           const waitFor = (predicate, timeout=15000) => new Promise((resolve,reject)=>{ const timer=setTimeout(()=>reject(new Error('timed out waiting for state')),timeout); const check=()=>{ const m=messages.find(predicate); if(m){clearTimeout(timer);resolve(m);} }; const id=setInterval(check,50); check(); });
-          ws.on('message',raw=>{ try{messages.push(JSON.parse(String(raw)));}catch{} });
           const send = action => ws.send(JSON.stringify(action));
           send({type:'CREATE_ROOM',playerName:'Tester',character:'duck'});
-          const created = await waitFor(m=>m.type==='ROOM_CREATED',5000);
+          await waitFor(m=>m.type==='ROOM_CREATED',5000);
           send({type:'ADD_BOT',difficulty:'normal'});
           const lobby = await waitFor(m=>m.type==='ROOM_UPDATED' && m.room.players.some(p=>p.isBot),5000);
           const bot = lobby.room.players.find(p=>p.isBot);
@@ -72,11 +72,11 @@ jobs:
           send({type:'SET_READY',ready:true});
           send({type:'START_GAME'});
           await waitFor(m=>m.type==='GAME_STARTED',5000);
-          const states=[]; const originalCount=messages.length;
+          const originalCount=messages.length;
           let sawBotTurn=false, sawBotProgress=false;
           const end=Date.now()+25000;
           while(Date.now()<end){
-            for(const m of messages.slice(originalCount)){ if(m.type!=='STATE_UPDATE') continue; states.push(m.gameState); const bp=m.gameState.players.find(p=>p.id===bot.id); if(m.gameState.activePlayerIndex>=0 && m.gameState.players[m.gameState.activePlayerIndex]?.id===bot.id) sawBotTurn=true; if(bp && (bp.position!==0 || bp.balance!==1500 || bp.bankrupt)) sawBotProgress=true; }
+            for(const m of messages.slice(originalCount)){ if(m.type!=='STATE_UPDATE') continue; const bp=m.gameState.players.find(p=>p.id===bot.id); if(m.gameState.players[m.gameState.activePlayerIndex]?.id===bot.id) sawBotTurn=true; if(bp && (bp.position!==0 || bp.balance!==1500 || bp.bankrupt)) sawBotProgress=true; }
             if(sawBotTurn && sawBotProgress) break;
             await new Promise(r=>setTimeout(r,250));
           }
@@ -84,10 +84,10 @@ jobs:
           ws.close(); server.kill('SIGTERM');
           console.log('Multiplayer bot integration test passed');
           EOF
-          node /tmp/test-multiplayer.mjs
+          node scripts/tmp-multiplayer-test.mjs
       - name: Cleanup temporary tooling and commit verified gameplay
         run: |
-          rm -f scripts/patch-gameplay.py scripts/patch-gameplay-v2.py .github/workflows/gameplay-stage.yml
+          rm -f scripts/patch-gameplay.py scripts/patch-gameplay-v2.py scripts/tmp-multiplayer-test.mjs .github/workflows/gameplay-stage.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
