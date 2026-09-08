@@ -61,7 +61,7 @@ jobs:
           const messages=[];
           ws.on('message',raw=>{ try{messages.push(JSON.parse(String(raw)));}catch{} });
           await new Promise((resolve,reject)=>{ const timer=setTimeout(()=>reject(new Error('ws open timeout')),5000); ws.on('open',()=>{clearTimeout(timer);resolve();}); ws.on('error',reject); });
-          const waitFor = (predicate, timeout=15000) => new Promise((resolve,reject)=>{ const timer=setTimeout(()=>reject(new Error('timed out waiting for state')),timeout); const check=()=>{ const m=messages.find(predicate); if(m){clearTimeout(timer);resolve(m);} }; const id=setInterval(check,50); check(); });
+          const waitFor = (predicate, timeout=15000) => new Promise((resolve,reject)=>{ const timer=setTimeout(()=>{clearInterval(id);reject(new Error('timed out waiting for state'));},timeout); const check=()=>{ const m=messages.find(predicate); if(m){clearTimeout(timer);clearInterval(id);resolve(m);} }; const id=setInterval(check,50); check(); });
           const send = action => ws.send(JSON.stringify(action));
           send({type:'CREATE_ROOM',playerName:'Tester',character:'duck'});
           await waitFor(m=>m.type==='ROOM_CREATED',5000);
