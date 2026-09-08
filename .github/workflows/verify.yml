@@ -45,7 +45,7 @@ jobs:
           if (!['unowned','safe','rent','tax','card','detention'].includes(landing.type)) throw new Error('Movement target did not re-enter landing resolution');
           console.log('Gameplay unit checks passed');
           EOF
-      - name: Restore CI architecture and commit verified gameplay fixes
+      - name: Restore CI architecture and publish verified gameplay branch
         run: |
           cat > .github/workflows/verify.yml <<'EOF'
           name: Verify
@@ -80,4 +80,4 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
           git commit -m "fix: complete multiplayer bots and card movement"
-          git push --force-with-lease origin HEAD:main
+          git push --force origin HEAD:gameplay-bot-card-fix
