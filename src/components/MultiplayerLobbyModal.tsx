@@ -21,6 +21,8 @@ import {
   Sparkles,
   ShieldCheck,
   Radio,
+  Bot,
+  UserRound,
   Sliders,
 } from 'lucide-react';
 
@@ -307,6 +309,7 @@ export const MultiplayerLobbyModal: React.FC<MultiplayerLobbyModalProps> = ({
                         <div>
                           <div className="flex items-center gap-1.5 font-bold text-stone-100 text-xs">
                             <span>{p.name}</span>
+                            {p.isBot ? <span className="flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-300 text-[10px] font-bold"><Bot className="w-3 h-3" /> BOT</span> : <span className="flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-stone-800 text-stone-300 text-[10px] font-bold"><UserRound className="w-3 h-3" /> HUMAN</span>}
                             {p.isHost && (
                               <span className="flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400 text-[10px] font-bold">
                                 <Crown className="w-3 h-3" /> HOST
@@ -316,7 +319,7 @@ export const MultiplayerLobbyModal: React.FC<MultiplayerLobbyModalProps> = ({
                               <span className="text-stone-400 text-[10px] font-normal">(You)</span>
                             )}
                           </div>
-                          <span className="text-[10px] text-stone-400">{charDef?.name || 'Pawn'}</span>
+                          <span className="text-[10px] text-stone-400">{charDef?.name || 'Pawn'} {p.isBot ? `• ${p.difficulty || 'normal'} bot` : '• human'}</span>
                         </div>
                       </div>
 
@@ -347,6 +350,15 @@ export const MultiplayerLobbyModal: React.FC<MultiplayerLobbyModalProps> = ({
                 })}
               </div>
             </div>
+
+            {isHost && room.players.length < room.playerLimit && (
+              <div className="p-3.5 rounded-xl bg-blue-500/5 border border-blue-500/20 space-y-2">
+                <div className="flex items-center justify-between"><span className="text-xs font-bold text-stone-200">Add computer player</span><span className="text-[10px] text-stone-500">{room.playerLimit - room.players.length} slots left</span></div>
+                <div className="grid grid-cols-4 gap-2">
+                  {(['easy','normal','hard','expert'] as BotDifficulty[]).map((difficulty) => <button key={difficulty} type="button" onClick={() => onAddBot(difficulty)} className="py-2 rounded-xl bg-stone-900 border border-stone-700 hover:border-blue-400 text-stone-200 text-[10px] font-black uppercase transition-colors">+ {difficulty}</button>)}
+                </div>
+              </div>
+            )}
 
             {/* Player Controls: Ready Up & Character Swap */}
             <div className="p-3.5 rounded-xl bg-stone-950/60 border border-stone-800 space-y-3">
