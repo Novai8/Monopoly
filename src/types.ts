@@ -179,4 +179,4 @@ export type ServerMessage =
   | { type: 'VOICE_SIGNAL'; fromPlayerId: string; signal: WebRTCSignal }
   | { type: 'ERROR'; message: string; code?: string };
 
-// Gameplay verification trigger.
+// Gameplay verification trigger 2.
