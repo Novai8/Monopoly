@@ -20,6 +20,8 @@ jobs:
           node-version: 20
       - name: Apply gameplay fixes
         run: python3 scripts/apply-gameplay-fixes.py
+      - name: Apply card movement follow-up
+        run: python3 scripts/fix-gameplay-followup.py
       - name: Install dependencies
         run: npm install
       - name: Type check
@@ -33,11 +35,10 @@ jobs:
           node --import tsx --input-type=module <<'EOF'
           import { GameEngine } from './src/engine/gameEngine.ts';
           import { generateClassicBoard } from './src/data/classicBoard.ts';
-          import { initializeOwnership } from './src/utils/gameHelpers.ts';
           const tiles = generateClassicBoard('standard', 'classic-town');
           const player = { id: 'p1', name: 'Test', isAI: false, isBot: false, color: '#000', character: 'duck', balance: 1500, position: 7, inDetention: false, detentionTurns: 0, detentionPasses: 0, bankrupt: false, voiceState: 'quiet' };
           const players = [player, { ...player, id: 'p2', name: 'Other', position: 0 }];
-          const ownership = initializeOwnership(tiles);
+          const ownership = Object.fromEntries(tiles.map((tile) => [tile.id, { ownerId: null, houses: 0, isMortgaged: false }]));
           const move = GameEngine.executeCard({ id: 'move-test', deck: 'event', title: 'Move', description: 'Move', category: 'good', rarity: 'common', actionType: 'move-spaces', value: 3 }, player, players, tiles, ownership, tiles.length);
           if (move.movementTarget !== 10 || move.updatedPlayer.position !== 10) throw new Error('Card movement did not expose its target position');
           const settings = { mode: 'classic', gameMode: 'classic', boardSize: 'standard', boardName: 'Classic Town', theme: 'classic-town', boardTheme: 'classic-town', difficulty: 'normal', botDifficulty: 'normal', playerLimit: 4, startingMoney: 1500, turnTimer: 45, auctionsEnabled: true, tradingEnabled: true, voiceEnabled: true, reducedMotion: false, cameraMode: 'top-down', soundVolume: 80, sfxVolume: 80, voiceVolume: 80, sfxEnabled: true };
@@ -75,7 +76,7 @@ jobs:
                 - name: Production build
                   run: npm run build
           EOF
-          rm -f .github/workflows/gameplay-repair.yml scripts/apply-gameplay-fixes.py GAMEPLAY_REPAIR_TRIGGER.txt
+          rm -f .github/workflows/gameplay-repair.yml scripts/apply-gameplay-fixes.py scripts/fix-gameplay-followup.py GAMEPLAY_REPAIR_TRIGGER.txt
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
