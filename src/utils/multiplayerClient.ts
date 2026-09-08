@@ -41,7 +41,7 @@ export class MultiplayerClient {
 
   public connect(): Promise<boolean> {
     return new Promise((resolve) => {
-      if (this.ws?.readyState === WebSocket.OPEN) { resolve(true); return; }
+      if (this.ws?.readyState === WebSocket.OPEN) { this.isConnected = true; resolve(true); return; }
       if (this.ws?.readyState === WebSocket.CONNECTING) {
         const waitForOpen = () => { if (this.ws?.readyState === WebSocket.OPEN) { resolve(true); this.flushPendingActions(); } else if (this.ws?.readyState === WebSocket.CLOSED || this.ws?.readyState === WebSocket.CLOSING) resolve(false); else window.setTimeout(waitForOpen, 25); };
         waitForOpen();
@@ -56,7 +56,7 @@ export class MultiplayerClient {
       };
       this.ws.onmessage = (event) => { try { this.handleServerMessage(JSON.parse(event.data) as ServerMessage); } catch (error) { console.error('Failed to parse server message', error); } };
       this.ws.onclose = () => { this.isConnected = false; this.listeners.forEach((listener) => listener.onConnectionChange?.(false)); this.attemptReconnect(); };
-      this.ws.onerror = () => { this.isConnected = false; resolve(false); };
+      this.ws.onerror = () => { this.isConnected = false; this.listeners.forEach((listener) => listener.onConnectionChange?.(false)); };
     });
   }
 
