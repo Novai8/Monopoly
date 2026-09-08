@@ -10,7 +10,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "three": "^0.180.0"
+    "three": "^0.180.0",
     "@types/three": "^0.185.4",
     "canvas-confetti": "^1.9.4",
     "clsx": "^2.1.1",
