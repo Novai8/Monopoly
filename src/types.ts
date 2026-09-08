@@ -178,3 +178,5 @@ export type ServerMessage =
   | { type: 'EMOTE_EVENT'; emote: QuickEmote }
   | { type: 'VOICE_SIGNAL'; fromPlayerId: string; signal: WebRTCSignal }
   | { type: 'ERROR'; message: string; code?: string };
+
+// Gameplay verification trigger.
