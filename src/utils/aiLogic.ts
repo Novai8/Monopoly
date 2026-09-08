@@ -3,6 +3,7 @@ import { getOwnedCountInGroup, ownsFullGroup } from './gameHelpers';
 
 // Strategic bot valuation is intentionally based only on public board state and player balances.
 // Values are recalculated from visible game state for every decision.
+// Auction ceilings are never allowed to exceed the bot's safe cash position.
 const PERSONALITY_WEIGHTS: Record<BotPersonality, { cashReserve: number; group: number; rent: number; development: number; blocking: number; risk: number }> = {
   conservative: { cashReserve: 1.28, group: 1.05, rent: 0.9, development: 0.95, blocking: 0.8, risk: 1.35 }, aggressive: { cashReserve: 0.78, group: 1.2, rent: 1.18, development: 1.12, blocking: 1.15, risk: 0.72 }, collector: { cashReserve: 0.95, group: 1.55, rent: 1.05, development: 0.95, blocking: 1.35, risk: 0.9 }, investor: { cashReserve: 1, group: 1.05, rent: 1.12, development: 1.42, blocking: 0.95, risk: 0.92 }, opportunist: { cashReserve: 0.9, group: 1.18, rent: 1.15, development: 1.05, blocking: 1.42, risk: 0.82 }, balanced: { cashReserve: 1, group: 1.1, rent: 1.05, development: 1.08, blocking: 1, risk: 1 }
 };
