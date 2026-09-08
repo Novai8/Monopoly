@@ -9,8 +9,6 @@ on:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -18,10 +16,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-      - name: Apply gameplay fixes
-        run: python3 scripts/apply-gameplay-fixes.py
-      - name: Apply card movement follow-up
-        run: python3 scripts/fix-gameplay-followup.py
       - name: Install dependencies
         run: npm install
       - name: Type check
@@ -30,55 +24,3 @@ jobs:
         run: npx tsc --noEmit --skipLibCheck --module ESNext --moduleResolution bundler --target ES2020 server.ts
       - name: Production build
         run: npm run build
-      - name: Gameplay unit checks
-        run: |
-          node --import tsx --input-type=module <<'EOF'
-          import { GameEngine } from './src/engine/gameEngine.ts';
-          import { generateClassicBoard } from './src/data/classicBoard.ts';
-          const tiles = generateClassicBoard('standard', 'classic-town');
-          const player = { id: 'p1', name: 'Test', isAI: false, isBot: false, color: '#000', character: 'duck', balance: 1500, position: 7, inDetention: false, detentionTurns: 0, detentionPasses: 0, bankrupt: false, voiceState: 'quiet' };
-          const players = [player, { ...player, id: 'p2', name: 'Other', position: 0 }];
-          const ownership = Object.fromEntries(tiles.map((tile) => [tile.id, { ownerId: null, houses: 0, isMortgaged: false }]));
-          const move = GameEngine.executeCard({ id: 'move-test', deck: 'event', title: 'Move', description: 'Move', category: 'good', rarity: 'common', actionType: 'move-spaces', value: 3 }, player, players, tiles, ownership, tiles.length);
-          if (move.movementTarget !== 10 || move.updatedPlayer.position !== 10) throw new Error('Card movement did not expose its target position');
-          const settings = { mode: 'classic', gameMode: 'classic', boardSize: 'standard', boardName: 'Classic Town', theme: 'classic-town', boardTheme: 'classic-town', difficulty: 'normal', botDifficulty: 'normal', playerLimit: 4, startingMoney: 1500, turnTimer: 45, auctionsEnabled: true, tradingEnabled: true, voiceEnabled: true, reducedMotion: false, cameraMode: 'top-down', soundVolume: 80, sfxVolume: 80, voiceVolume: 80, sfxEnabled: true };
-          const landing = GameEngine.resolveLanding(move.updatedPlayer, tiles[10], tiles, move.updatedOwnership, move.updatedAllPlayers, settings, 0);
-          if (!['unowned','safe','rent','tax','card','detention'].includes(landing.type)) throw new Error('Movement target did not re-enter landing resolution');
-          console.log('Gameplay unit checks passed');
-          EOF
-      - name: Restore CI architecture and publish verified gameplay branch
-        run: |
-          cat > .github/workflows/verify.yml <<'EOF'
-          name: Verify
-
-          on:
-            push:
-              branches: [main]
-            pull_request:
-              branches: [main]
-
-          jobs:
-            verify:
-              runs-on: ubuntu-latest
-              steps:
-                - name: Checkout
-                  uses: actions/checkout@v4
-                - name: Setup Node
-                  uses: actions/setup-node@v4
-                  with:
-                    node-version: 20
-                - name: Install dependencies
-                  run: npm install
-                - name: Type check
-                  run: npm run lint
-                - name: Server type check
-                  run: npx tsc --noEmit --skipLibCheck --module ESNext --moduleResolution bundler --target ES2020 server.ts
-                - name: Production build
-                  run: npm run build
-          EOF
-          rm -f .github/workflows/gameplay-repair.yml scripts/apply-gameplay-fixes.py scripts/fix-gameplay-followup.py GAMEPLAY_REPAIR_TRIGGER.txt
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git commit -m "fix: complete multiplayer bots and card movement"
-          git push origin HEAD:gameplay-bot-card-fix
