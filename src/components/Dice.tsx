@@ -106,8 +106,12 @@ export const Dice: React.FC<DiceProps> = ({
       {/* Roll Action Button */}
       <button
         id="roll-dice-btn"
+        type="button"
         disabled={!canRoll || isRolling}
-        onClick={onRoll}
+        onClick={(e) => {
+          (e.currentTarget as HTMLElement)?.blur();
+          onRoll();
+        }}
         className={`px-5 py-2.5 rounded-xl font-bold flex items-center gap-2 transition-all shadow-md active:scale-95
           ${
             canRoll && !isRolling

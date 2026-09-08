@@ -18,14 +18,28 @@ export const GameLog: React.FC<GameLogProps> = ({ entries }) => {
   };
 
   useEffect(() => {
-    if (!containerRef.current || isScrolledUpRef.current) return;
-    containerRef.current.scrollTop = containerRef.current.scrollHeight;
+    const el = containerRef.current;
+    if (!el || isScrolledUpRef.current) return;
+    const pageScrollY = window.scrollY || document.documentElement.scrollTop || 0;
+    const pageScrollX = window.scrollX || document.documentElement.scrollLeft || 0;
+    el.scrollTop = el.scrollHeight;
+    const currentPageScrollY = window.scrollY || document.documentElement.scrollTop || 0;
+    if (currentPageScrollY !== pageScrollY) {
+      window.scrollTo({ top: pageScrollY, left: pageScrollX, behavior: 'instant' as ScrollBehavior });
+    }
   }, [entries]);
 
   const scrollToBottom = () => {
-    if (!containerRef.current) return;
+    const el = containerRef.current;
+    if (!el) return;
     isScrolledUpRef.current = false;
-    containerRef.current.scrollTop = containerRef.current.scrollHeight;
+    const pageScrollY = window.scrollY || document.documentElement.scrollTop || 0;
+    const pageScrollX = window.scrollX || document.documentElement.scrollLeft || 0;
+    el.scrollTop = el.scrollHeight;
+    const currentPageScrollY = window.scrollY || document.documentElement.scrollTop || 0;
+    if (currentPageScrollY !== pageScrollY) {
+      window.scrollTo({ top: pageScrollY, left: pageScrollX, behavior: 'instant' as ScrollBehavior });
+    }
   };
 
   const renderIcon = (type: GameLogEntry['type']) => {
@@ -66,6 +80,7 @@ export const GameLog: React.FC<GameLogProps> = ({ entries }) => {
       <div
         ref={containerRef}
         onScroll={handleScroll}
+        style={{ overflowAnchor: 'none' }}
         className="flex-1 overflow-y-auto p-2.5 space-y-1.5 text-xs relative"
       >
         {entries.length === 0 ? (

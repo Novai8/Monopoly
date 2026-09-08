@@ -247,6 +247,67 @@ export default function App() {
 
   const activePlayer = players[activePlayerIndex] || players[0];
 
+  // Scroll Position Guardian
+  // Ensures that game events (dice roll, character landing, rent/tax payments, bot actions, cards, new logs, etc.)
+  // NEVER automatically scroll the browser. The page stays precisely where the player left it.
+  // Full manual scrolling (mouse wheel, touch, scrollbars, keyboard) remains 100% natural and functional.
+  const userScrollYRef = useRef<number>(0);
+  const isUserScrollingRef = useRef<boolean>(false);
+  const scrollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    // Disable browser automatic scroll restoration so React updates don't jump
+    if ('scrollRestoration' in history) {
+      history.scrollRestoration = 'manual';
+    }
+
+    const markUserScroll = () => {
+      isUserScrollingRef.current = true;
+      if (scrollTimeoutRef.current) clearTimeout(scrollTimeoutRef.current);
+      scrollTimeoutRef.current = setTimeout(() => {
+        isUserScrollingRef.current = false;
+      }, 150);
+    };
+
+    const handleScroll = () => {
+      const currentY = window.scrollY;
+      const isMouseDown = (window.event as MouseEvent)?.buttons === 1;
+      if (isUserScrollingRef.current || isMouseDown) {
+        userScrollYRef.current = currentY;
+      } else {
+        // Automatic/programmatic displacement detected without user interaction
+        if (Math.abs(currentY - userScrollYRef.current) > 1) {
+          window.scrollTo({
+            top: userScrollYRef.current,
+            left: 0,
+            behavior: 'instant' as ScrollBehavior,
+          });
+        }
+      }
+    };
+
+    window.addEventListener('wheel', markUserScroll, { passive: true });
+    window.addEventListener('touchstart', markUserScroll, { passive: true });
+    window.addEventListener('touchmove', markUserScroll, { passive: true });
+    window.addEventListener('keydown', markUserScroll, { passive: true });
+    window.addEventListener('pointerdown', markUserScroll, { passive: true });
+    window.addEventListener('mousedown', markUserScroll, { passive: true });
+    window.addEventListener('scroll', handleScroll, { passive: true });
+
+    userScrollYRef.current = window.scrollY;
+
+    return () => {
+      window.removeEventListener('wheel', markUserScroll);
+      window.removeEventListener('touchstart', markUserScroll);
+      window.removeEventListener('touchmove', markUserScroll);
+      window.removeEventListener('keydown', markUserScroll);
+      window.removeEventListener('pointerdown', markUserScroll);
+      window.removeEventListener('mousedown', markUserScroll);
+      window.removeEventListener('scroll', handleScroll);
+      if (scrollTimeoutRef.current) clearTimeout(scrollTimeoutRef.current);
+    };
+  }, []);
+
   const addLog = useCallback((text: string, type: GameLogEntry['type'] = 'info') => {
     setLogs((prev) => [
       ...prev,
@@ -258,6 +319,36 @@ export default function App() {
       },
     ]);
   }, []);
+
+  const handleSendChatMessage = useCallback((text: string) => {
+    const activeP = players[activePlayerIndex] || players[0];
+    const charObj = CHARACTERS[activeP?.character || 'duck'];
+    const newMsg: ChatMessage = {
+      id: `chat-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      senderId: activeP?.id || 'p1',
+      senderName: activeP?.name || 'Player',
+      senderColor: activeP?.color || '#fbbf24',
+      senderEmoji: charObj?.emoji || '🎩',
+      text,
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    };
+    setChatMessages((prev) => [...prev, newMsg]);
+  }, [players, activePlayerIndex]);
+
+  const handleSendChatEmote = useCallback((emoji: string) => {
+    const activeP = players[activePlayerIndex] || players[0];
+    const charObj = CHARACTERS[activeP?.character || 'duck'];
+    const newMsg: ChatMessage = {
+      id: `chat-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      senderId: activeP?.id || 'p1',
+      senderName: activeP?.name || 'Player',
+      senderColor: activeP?.color || '#fbbf24',
+      senderEmoji: charObj?.emoji || '🎩',
+      text: emoji,
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    };
+    setChatMessages((prev) => [...prev, newMsg]);
+  }, [players, activePlayerIndex]);
 
   // Update board tiles when boardSize or boardTheme changes
   const handleUpdateSettings = (newSettings: Partial<GameSettings>) => {
@@ -1235,6 +1326,7 @@ export default function App() {
                 reducedMotion={settings.reducedMotion}
                 cameraMode="perspective"
                 onTileClick={(tile) => setSelectedTileModal(tile)}
+                drawnCard={drawnCard}
               />
 
               {/* 3D View Interactive Controls Deck */}
@@ -1304,30 +1396,129 @@ export default function App() {
           )}
         </div>
 
-        {/* Right Sidebar: Players Roster & Live Chronicle Feed (cols 9-12) */}
-        <div className="lg:col-span-4 flex flex-col gap-4 w-full">
-          {/* Players Roster */}
-          <div className="flex flex-col gap-2">
-            <h2 className="text-xs font-bold uppercase tracking-wider text-stone-400 px-1 flex items-center justify-between">
-              <span>Tycoons & Standings ({players.length})</span>
-              <span className="text-[10px] text-amber-400 font-mono">Ranked by Net Worth</span>
-            </h2>
-            <PlayerBar
-              players={players}
-              activePlayerIndex={activePlayerIndex}
-              tiles={boardTiles}
-              ownership={ownership}
-              onOpenTrade={(targetId) => {
-                setTradePartnerId(targetId);
-                setIsTradeOpen(true);
+        {/* Right Sidebar: Players Roster, Properties, Chronicle & Town Chat (cols 9-12) */}
+        <div className="lg:col-span-4 flex flex-col gap-3 w-full">
+          {/* Navigation Tabs - Never scrolls the main webpage */}
+          <div className="flex items-center gap-1 p-1 bg-stone-900 border border-stone-800 rounded-2xl shrink-0">
+            <button
+              id="sidebar-tab-players"
+              type="button"
+              onClick={(e) => {
+                (e.currentTarget as HTMLElement)?.blur();
+                setSidebarTab('players');
               }}
-              onTileClick={(tileId) => setSelectedTileModal(boardTiles[tileId])}
-            />
+              className={`flex-1 py-1.5 px-2 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer ${
+                sidebarTab === 'players'
+                  ? 'bg-amber-400 text-stone-950 shadow-md'
+                  : 'text-stone-400 hover:text-stone-200'
+              }`}
+            >
+              <Users className="w-3.5 h-3.5" />
+              <span>Standings</span>
+            </button>
+            <button
+              id="sidebar-tab-properties"
+              type="button"
+              onClick={(e) => {
+                (e.currentTarget as HTMLElement)?.blur();
+                setSidebarTab('properties');
+              }}
+              className={`flex-1 py-1.5 px-2 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer ${
+                sidebarTab === 'properties'
+                  ? 'bg-amber-400 text-stone-950 shadow-md'
+                  : 'text-stone-400 hover:text-stone-200'
+              }`}
+            >
+              <Building2 className="w-3.5 h-3.5" />
+              <span>Deeds</span>
+            </button>
+            <button
+              id="sidebar-tab-log"
+              type="button"
+              onClick={(e) => {
+                (e.currentTarget as HTMLElement)?.blur();
+                setSidebarTab('log');
+              }}
+              className={`flex-1 py-1.5 px-2 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer ${
+                sidebarTab === 'log'
+                  ? 'bg-amber-400 text-stone-950 shadow-md'
+                  : 'text-stone-400 hover:text-stone-200'
+              }`}
+            >
+              <ScrollText className="w-3.5 h-3.5" />
+              <span>Chronicle</span>
+            </button>
+            <button
+              id="sidebar-tab-chat"
+              type="button"
+              onClick={(e) => {
+                (e.currentTarget as HTMLElement)?.blur();
+                setSidebarTab('chat');
+              }}
+              className={`flex-1 py-1.5 px-2 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer ${
+                sidebarTab === 'chat'
+                  ? 'bg-amber-400 text-stone-950 shadow-md'
+                  : 'text-stone-400 hover:text-stone-200'
+              }`}
+            >
+              <MessageSquare className="w-3.5 h-3.5" />
+              <span>Chat</span>
+            </button>
           </div>
 
-          {/* Chronicle Event Feed */}
-          <div className="h-64 lg:h-80">
-            <GameLog entries={logs} />
+          {/* Active Tab Panel */}
+          <div className="h-[520px] flex flex-col">
+            {sidebarTab === 'players' && (
+              <div className="flex flex-col gap-2 h-full">
+                <div className="flex items-center justify-between px-1">
+                  <span className="text-[10px] text-stone-400 font-mono">Ranked by Net Worth</span>
+                  <span className="text-[10px] text-amber-400/90 font-medium">Click player to trade</span>
+                </div>
+                <div className="flex-1 overflow-y-auto">
+                  <PlayerBar
+                    players={players}
+                    activePlayerIndex={activePlayerIndex}
+                    tiles={boardTiles}
+                    ownership={ownership}
+                    onOpenTrade={(targetId) => {
+                      setTradePartnerId(targetId);
+                      setIsTradeOpen(true);
+                    }}
+                    onTileClick={(tileId) => setSelectedTileModal(boardTiles[tileId])}
+                  />
+                </div>
+              </div>
+            )}
+
+            {sidebarTab === 'properties' && (
+              <div className="h-full">
+                <PropertyPanel
+                  tiles={boardTiles}
+                  ownership={ownership}
+                  players={players}
+                  activePlayer={activePlayer}
+                  onSelectTile={(tileId) => setSelectedTileModal(boardTiles[tileId])}
+                />
+              </div>
+            )}
+
+            {sidebarTab === 'log' && (
+              <div className="h-full">
+                <GameLog entries={logs} />
+              </div>
+            )}
+
+            {sidebarTab === 'chat' && (
+              <div className="h-full">
+                <ChatPanel
+                  messages={chatMessages}
+                  players={players}
+                  activePlayer={activePlayer}
+                  onSendMessage={handleSendChatMessage}
+                  onSendEmote={handleSendChatEmote}
+                />
+              </div>
+            )}
           </div>
         </div>
       </main>

@@ -76,7 +76,9 @@ export const ActionBanner: React.FC<ActionBannerProps> = ({
           <div className="flex items-center gap-2 flex-wrap justify-center">
             {activePlayer.balance >= 50 && !isBotTurn && (
               <button
-                onClick={() => {
+                type="button"
+                onClick={(e) => {
+                  (e.currentTarget as HTMLElement)?.blur();
                   audio.play('button-click');
                   onPayDetentionBail();
                 }}
@@ -88,7 +90,9 @@ export const ActionBanner: React.FC<ActionBannerProps> = ({
             )}
             {((activePlayer.detentionPasses ?? activePlayer.freePasses ?? 0) > 0) && !isBotTurn && (
               <button
-                onClick={() => {
+                type="button"
+                onClick={(e) => {
+                  (e.currentTarget as HTMLElement)?.blur();
                   audio.play('button-click');
                   onUseFreePass();
                 }}
@@ -155,8 +159,10 @@ export const ActionBanner: React.FC<ActionBannerProps> = ({
 
           {!isBotTurn && (
             <button
+              type="button"
               disabled={drawnCard.requiresPlayerChoice && !selectedTargetId}
-              onClick={() => {
+              onClick={(e) => {
+                (e.currentTarget as HTMLElement)?.blur();
                 audio.play('button-click');
                 onDismissCard(selectedTargetId || eligibleTargetPlayers[0]?.id);
                 setSelectedTargetId('');
@@ -180,7 +186,9 @@ export const ActionBanner: React.FC<ActionBannerProps> = ({
             <div className="flex items-center gap-3">
               <button
                 id="buy-property-btn"
-                onClick={() => {
+                type="button"
+                onClick={(e) => {
+                  (e.currentTarget as HTMLElement)?.blur();
                   audio.play('property-buy');
                   onBuyProperty();
                 }}
@@ -192,7 +200,9 @@ export const ActionBanner: React.FC<ActionBannerProps> = ({
               </button>
               <button
                 id="pass-property-btn"
-                onClick={() => {
+                type="button"
+                onClick={(e) => {
+                  (e.currentTarget as HTMLElement)?.blur();
                   audio.play('button-click');
                   onPassProperty();
                 }}
@@ -220,7 +230,9 @@ export const ActionBanner: React.FC<ActionBannerProps> = ({
           </span>
           {!isBotTurn ? (
             <button
-              onClick={() => {
+              type="button"
+              onClick={(e) => {
+                (e.currentTarget as HTMLElement)?.blur();
                 audio.play('rent-paid');
                 onPayRent();
               }}
@@ -246,7 +258,9 @@ export const ActionBanner: React.FC<ActionBannerProps> = ({
           </span>
           {!isBotTurn ? (
             <button
-              onClick={() => {
+              type="button"
+              onClick={(e) => {
+                (e.currentTarget as HTMLElement)?.blur();
                 audio.play('rent-paid');
                 onPayTax();
               }}
@@ -269,7 +283,9 @@ export const ActionBanner: React.FC<ActionBannerProps> = ({
           {!isBotTurn ? (
             <button
               id="end-turn-btn"
-              onClick={() => {
+              type="button"
+              onClick={(e) => {
+                (e.currentTarget as HTMLElement)?.blur();
                 audio.play('button-click');
                 onEndTurn();
               }}
