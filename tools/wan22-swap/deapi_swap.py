@@ -5,7 +5,8 @@ The API key is read from a local file named deapi_key.txt (or from the
 DEAPI_API_KEY environment variable). deapi_key.txt is git-ignored, so the key
 never gets committed.
 
-Usage (run from the folder that holds segment_6s.mp4, firefly.jpg, firefly_1.jpg):
+Usage (run from the folder that holds segment_6s.mp4, firefly.jpg, firefly_1.jpg;
+deapi_key.txt must sit next to this script):
     python deapi_swap.py
 """
 import os
@@ -16,12 +17,13 @@ import requests
 
 BASE = "https://api.deapi.ai"
 MODEL = "Wan2_2_Animate_14B_INT8"
+MIME = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}
 
 
 def load_key():
     key = os.environ.get("DEAPI_API_KEY")
     if not key:
-        p = Path("deapi_key.txt")
+        p = Path(__file__).resolve().parent / "deapi_key.txt"
         if p.exists():
             key = p.read_text().strip()
     if not key:
@@ -34,7 +36,7 @@ def run(headers, video_path, image_path, out_path):
         resp = requests.post(
             f"{BASE}/api/v2/videos/replacements", headers=headers,
             files={"video": ("input.mp4", v, "video/mp4"),
-                   "ref_image": (os.path.basename(image_path), r, "image/jpeg")},
+                   "ref_image": (os.path.basename(image_path), r, MIME.get(Path(image_path).suffix.lower(), "image/jpeg"))},
             data={"model": MODEL, "width": 768, "height": 576, "seed": 42},
             timeout=600,
         )
