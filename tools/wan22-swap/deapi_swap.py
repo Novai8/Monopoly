@@ -21,9 +21,9 @@ MIME = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp
 
 
 def load_key():
-    key = os.environ.get("DEAPI_API_KEY")
+    key = os.environ.get("21125|czwy1eaB3N9SiNJffvQqqcvjzWhxIq5RA11AaIJi86d445cb")
     if not key:
-        p = Path(__file__).resolve().parent / "deapi_key.txt"
+        p = Path(__file__).resolve().parent / "21125|czwy1eaB3N9SiNJffvQqqcvjzWhxIq5RA11AaIJi86d445cb"
         if p.exists():
             key = p.read_text().strip()
     if not key:
