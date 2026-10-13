@@ -27,9 +27,21 @@ from pathlib import Path
 
 import requests
 
+HERE_DIR = Path(__file__).resolve().parent
 BASE = "https://api.kie.ai"
 UPLOAD_BASE = "https://kieai.redpandaai.co"
 MODEL = "wan/2-2-animate-replace"
+
+
+def load_key():
+    key = os.environ.get("KIE_API_KEY")
+    if not key:
+        p = HERE_DIR / "kie_key.txt"
+        if p.exists():
+            key = p.read_text().strip()
+    if not key:
+        sys.exit("No key found. Put your key in kie_key.txt next to this script, or set KIE_API_KEY.")
+    return key
 
 
 def headers(key):
@@ -38,15 +50,19 @@ def headers(key):
 
 def upload(key, path, upload_path="monopoly-swap"):
     """Upload a local file via the File Stream Upload API. Returns a downloadUrl."""
+    mime = {".mp4": "video/mp4", ".mov": "video/quicktime", ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}.get(
+        Path(path).suffix.lower(), "application/octet-stream")
     with open(path, "rb") as f:
         r = requests.post(
             f"{UPLOAD_BASE}/api/file-stream-upload",
             headers=headers(key),
-            files={"file": (Path(path).name, f)},
+            files={"file": (Path(path).name, f, mime)},
             data={"uploadPath": upload_path},
             timeout=600,
         )
-    r.raise_for_status()
+    if not r.ok:
+        raise RuntimeError(f"upload rejected ({r.status_code}) for {path}: {r.text[:500]}")
     j = r.json()
     if not j.get("success") or j.get("code") != 200:
         raise RuntimeError(f"upload failed for {path}: {j.get('msg')}")
@@ -64,7 +80,8 @@ def create_task(key, video_url, image_url, resolution):
         },
     }
     r = requests.post(f"{BASE}/api/v1/jobs/createTask", headers=headers(key), json=body, timeout=120)
-    r.raise_for_status()
+    if not r.ok:
+        raise RuntimeError(f"createTask rejected ({r.status_code}): {r.text[:500]}")
     j = r.json()
     if j.get("code") != 200:
         raise RuntimeError(f"createTask failed: {j}")
@@ -121,9 +138,7 @@ def main():
     ap.add_argument("--yes", action="store_true", help="confirm the paid run")
     a = ap.parse_args()
 
-    key = os.environ.get("KIE_API_KEY")
-    if not key:
-        sys.exit("Set KIE_API_KEY in your environment first.")
+    key = load_key()
     if not a.yes:
         sys.exit("This run spends credits. Re-run with --yes to confirm.")
 

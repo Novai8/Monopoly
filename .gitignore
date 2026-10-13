@@ -3,3 +3,7 @@
 deapi_key.txt
 tools/wan22-swap/deapi_key.txt
 *.key.txt
+
+# Kie.ai key file (never commit)
+kie_key.txt
+tools/wan22-swap/kie_key.txt
