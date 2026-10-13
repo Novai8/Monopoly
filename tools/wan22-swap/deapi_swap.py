@@ -40,7 +40,8 @@ def run(headers, video_path, image_path, out_path):
             data={"model": MODEL, "width": 768, "height": 576, "seed": 42},
             timeout=600,
         )
-    resp.raise_for_status()
+    if not resp.ok:
+        raise RuntimeError(f"deAPI rejected the request ({resp.status_code}): {resp.text[:800]}")
     rid = resp.json()["data"]["request_id"]
     print("submitted", rid)
     while True:
