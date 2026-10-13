@@ -1,0 +1,5 @@
+
+# Local secrets (never commit API keys)
+deapi_key.txt
+tools/wan22-swap/deapi_key.txt
+*.key.txt
